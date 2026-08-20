@@ -110,7 +110,9 @@ export default function Page() {
     const body = await r.json().catch(() => ({}));
     setBusy(false);
     if (!r.ok) return flash(body.error || "Could not save that change");
-    setSel(null); flash("Saved"); load();
+    setSel(null);
+    flash(body.alsoFixed ? `Saved · ${body.alsoFixed} similar entries filed too` : "Saved");
+    load();
   };
 
   const deleteTxn = async (id) => {
@@ -390,7 +392,7 @@ export default function Page() {
         ))}
       </nav>
       {sel && (
-        <DetailSheet txn={sel} categories={categories} accMap={accMap} busy={busy}
+        <DetailSheet txn={sel} categories={categories} accMap={accMap} txns={txns} busy={busy}
           onClose={()=>setSel(null)} onSave={saveTxn} onDelete={deleteTxn} />
       )}
       {toast && <div style={S.toast}>{toast}</div>}
@@ -415,13 +417,23 @@ function Row({ t, cat, acc, kind, onOpen }) {
 }
 
 // Tap a row to see what the bank actually said and correct how it was filed.
-function DetailSheet({ txn, categories, accMap, busy, onClose, onSave, onDelete }) {
+function DetailSheet({ txn, categories, accMap, txns, busy, onClose, onSave, onDelete }) {
   const [form, setForm] = useState({
     id: txn.id, amount: String(txn.amount), type: txn.type,
     merchant: txn.merchant || "", note: txn.note || "",
     category_id: txn.category_id || "other", person: txn.person || "",
   });
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [applyAll, setApplyAll] = useState(true);
+
+  // How much backlog this one decision would clear.
+  const similar = useMemo(() => {
+    const name = (form.merchant || "").trim().toLowerCase();
+    if (!name || name === "unknown") return 0;
+    return txns.filter(x => x.id !== txn.id &&
+      (x.merchant || "").toLowerCase() === name &&
+      ["other","income"].includes(x.category_id)).length;
+  }, [txns, form.merchant, txn.id]);
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const cat = categories.find(c => c.id === form.category_id);
 
@@ -495,8 +507,15 @@ function DetailSheet({ txn, categories, accMap, busy, onClose, onSave, onDelete 
           </div>
         )}
 
+        {similar > 0 && (
+          <label style={S.remember}>
+            <input type="checkbox" checked={applyAll} onChange={e=>setApplyAll(e.target.checked)} />
+            <span>Remember this — also file the {similar} other unsorted {similar === 1 ? "entry" : "entries"} from “{form.merchant}”</span>
+          </label>
+        )}
+
         <button style={{...S.btnPrimary, marginTop:6}} disabled={busy}
-          onClick={()=>onSave({ ...form, amount: Number(form.amount) })}>
+          onClick={()=>onSave({ ...form, amount: Number(form.amount), applyToSimilar: applyAll })}>
           {busy ? "Saving…" : "Save"}
         </button>
         {confirmDelete ? (
@@ -607,6 +626,8 @@ const S = {
             color:"#8494AC", fontFamily:"monospace", lineHeight:1.6, wordBreak:"break-word" },
   btnGhost: { width:"100%", background:"none", border:"1px solid #2A3549", color:"#8494AC", borderRadius:12, padding:12, fontSize:14, marginTop:8 },
   confirmRow: { display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:10 },
+  remember: { display:"flex", gap:9, alignItems:"flex-start", background:"#171F2E", border:"1px solid #2A3549",
+              borderRadius:10, padding:11, fontSize:12, color:"#8494AC", lineHeight:1.5, marginBottom:4 },
   barTrack: { width:"100%", height:5, background:"#0E1420", borderRadius:3, overflow:"hidden" },
   barFill: { height:"100%", background:"#4BB6A8" },
   chip: { width:32, height:32, borderRadius:9, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 },

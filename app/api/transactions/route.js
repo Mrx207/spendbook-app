@@ -3,6 +3,10 @@ import { uid, categorise } from "@/lib/parser";
 
 export const runtime = "nodejs";
 
+// A remembered merchant becomes a rule pattern, so anything regex-special in
+// the name has to be neutralised or it will match the wrong rows later.
+const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 export async function GET() {
   await ensureSchema();
   const [{ rows: txns }, { rows: categories }, { rows: accounts }, { rows: rules }, { rows: rates }, { rows: debts }] = await Promise.all([
@@ -80,16 +84,36 @@ export async function PATCH(req) {
   // names from haunting the People balances after a recategorise.
   const person = t.category_id === "people" ? (t.person || "").trim() || null : null;
 
+  const merchant = (t.merchant || "").trim() || "Unknown";
+
   await sql`UPDATE transactions SET
     amount = ${amount},
     type = ${t.type === "credit" ? "credit" : "debit"},
-    merchant = ${(t.merchant || "").trim() || "Unknown"},
+    merchant = ${merchant},
     note = ${t.note || ""},
     category_id = ${t.category_id},
     person = ${person},
     kind = ${kind}
     WHERE id = ${t.id}`;
-  return Response.json({ ok: true, kind });
+
+  // Filing one row by hand is fine; filing six hundred is not. Remembering the
+  // decision turns a correction into a rule that also cleans up the backlog.
+  let alsoFixed = 0;
+  if (t.applyToSimilar && merchant !== "Unknown") {
+    const pattern = escapeRegex(merchant.toLowerCase());
+    await sql`INSERT INTO rules (id, pattern, category_id, source)
+      VALUES (${"u" + uid()}, ${pattern}, ${t.category_id}, 'user')
+      ON CONFLICT (id) DO NOTHING`;
+
+    // Only rows the user has not already filed deliberately are swept up.
+    const res = await sql`UPDATE transactions SET category_id = ${t.category_id}, kind = ${kind}, person = ${person}
+      WHERE lower(merchant) = ${merchant.toLowerCase()}
+        AND id <> ${t.id}
+        AND category_id IN ('other','income')`;
+    alsoFixed = res.rowCount;
+  }
+
+  return Response.json({ ok: true, kind, alsoFixed });
 }
 
 export async function DELETE(req) {
