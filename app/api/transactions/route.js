@@ -5,12 +5,13 @@ export const runtime = "nodejs";
 
 export async function GET() {
   await ensureSchema();
-  const [{ rows: txns }, { rows: categories }, { rows: accounts }, { rows: rules }, { rows: rates }] = await Promise.all([
+  const [{ rows: txns }, { rows: categories }, { rows: accounts }, { rows: rules }, { rows: rates }, { rows: debts }] = await Promise.all([
     sql`SELECT * FROM transactions ORDER BY date DESC, time DESC NULLS LAST, created_at DESC LIMIT 2000`,
     sql`SELECT * FROM categories`, sql`SELECT * FROM accounts`, sql`SELECT * FROM rules`,
     sql`SELECT * FROM rates`,
+    sql`SELECT * FROM debts ORDER BY outstanding DESC, created_at DESC`,
   ]);
-  return Response.json({ txns, categories, accounts, rules, rates });
+  return Response.json({ txns, categories, accounts, rules, rates, debts });
 }
 
 const COLS = ["id","type","amount","date","time","merchant","note","category_id",
@@ -60,13 +61,35 @@ export async function POST(req) {
   return Response.json({ added });
 }
 
+// Edits from the transaction sheet. Only the fields worth correcting by hand
+// are writable; `kind` is re-derived from the new category rather than trusted
+// from the client, so the totals can never disagree with the category shown.
 export async function PATCH(req) {
   await ensureSchema();
-  const t = await req.json();
-  await sql`UPDATE transactions SET type=${t.type}, amount=${t.amount}, date=${t.date}, time=${t.time||""},
-    merchant=${t.merchant}, note=${t.note||""}, category_id=${t.categoryId}, account_id=${t.accountId}
-    WHERE id=${t.id}`;
-  return Response.json({ ok: true });
+  const t = await req.json().catch(() => null);
+  if (!t?.id) return Response.json({ error: "Missing transaction id" }, { status: 400 });
+
+  const { rows: cats } = await sql`SELECT id, kind FROM categories WHERE id = ${t.category_id}`;
+  if (!cats.length) return Response.json({ error: "Unknown category" }, { status: 400 });
+  const kind = cats[0].kind;
+
+  const amount = Number(t.amount);
+  if (!(amount > 0)) return Response.json({ error: "Amount must be greater than zero" }, { status: 400 });
+
+  // A person only belongs on a lending row; clearing it elsewhere stops stale
+  // names from haunting the People balances after a recategorise.
+  const person = t.category_id === "people" ? (t.person || "").trim() || null : null;
+
+  await sql`UPDATE transactions SET
+    amount = ${amount},
+    type = ${t.type === "credit" ? "credit" : "debit"},
+    merchant = ${(t.merchant || "").trim() || "Unknown"},
+    note = ${t.note || ""},
+    category_id = ${t.category_id},
+    person = ${person},
+    kind = ${kind}
+    WHERE id = ${t.id}`;
+  return Response.json({ ok: true, kind });
 }
 
 export async function DELETE(req) {

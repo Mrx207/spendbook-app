@@ -12,7 +12,24 @@ const inr = (n, compact = false) => {
   }
   return "₹" + v.toLocaleString("en-IN", { maximumFractionDigits: 2 });
 };
-const todayISO = () => new Date().toISOString().slice(0,10);
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+// Postgres hands dates back as "2026-07-31T00:00:00.000Z". Slicing the date off
+// the front keeps the day the bank recorded - building a Date and reading local
+// fields would shift it across the timezone boundary.
+const dayOf = (d) => String(d).slice(0,10);
+const monthOf = (d) => String(d).slice(0,7);
+const fmtDay = (d) => { const [, m, day] = dayOf(d).split("-"); return `${+day} ${MONTHS[+m-1] || ""}`; };
+const fmtMonth = (ym) => { const [y, m] = ym.split("-"); return `${MONTHS[+m-1]} ${y}`; };
+const shiftMonth = (ym, by) => {
+  const [y, m] = ym.split("-").map(Number);
+  const d = new Date(Date.UTC(y, m - 1 + by, 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}`;
+};
+const thisMonth = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+};
 
 export default function Page() {
   const [data, setData] = useState(null);
@@ -22,6 +39,8 @@ export default function Page() {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState("");
   const [kindFilter, setKindFilter] = useState("all");
+  const [month, setMonth] = useState(null);
+  const [sel, setSel] = useState(null);
   const fileRef = React.useRef(null);
 
   const load = () => fetch("/api/transactions").then(r=>r.json()).then(setData);
@@ -37,8 +56,11 @@ export default function Page() {
     const catMap = Object.fromEntries(categories.map(c=>[c.id,c]));
     const accMap = Object.fromEntries(accounts.map(a=>[a.id,a]));
 
-    const now = new Date();
-    const monthTxns = txns.filter(t => { const d = new Date(t.date); return d.getFullYear()===now.getFullYear() && d.getMonth()===now.getMonth(); });
+    // Landing on an empty month because the last import was August and it is
+    // now September is a dead end, so default to the newest month with data.
+    const present = [...new Set(txns.map(t => monthOf(t.date)))].sort();
+    const active = month || present[present.length-1] || thisMonth();
+    const monthTxns = txns.filter(t => monthOf(t.date) === active);
 
     const sum = (list) => list.reduce((s,t)=>s+Number(t.amount),0);
     const of = (kind) => monthTxns.filter(t => kindOf(t, catMap) === kind);
@@ -48,18 +70,83 @@ export default function Page() {
     const income = sum(of("income"));
     const moved = sum(of("transfer"));
 
+    // Net position per person: money you sent them counts up, money they sent
+    // back counts down. One rule covers lending, borrowing and repayment - a
+    // positive balance means they owe you, negative means you owe them.
+    const ledger = {};
+    txns.filter(t => t.person).forEach(t => {
+      const name = t.person.trim();
+      ledger[name] = (ledger[name] || 0) + (t.type === "debit" ? 1 : -1) * Number(t.amount);
+    });
+    const people = Object.entries(ledger)
+      .map(([name, balance]) => ({ name, balance }))
+      .filter(p => Math.abs(p.balance) > 0.01)
+      .sort((a,b) => Math.abs(b.balance) - Math.abs(a.balance));
+
+    const owedToYou = people.filter(p => p.balance > 0).reduce((s,p)=>s+p.balance, 0);
+    const youOwe = people.filter(p => p.balance < 0).reduce((s,p)=>s-p.balance, 0);
+    const debtTotal = (data.debts||[]).reduce((s,d)=>s+Number(d.outstanding), 0);
+
     // Only expenses belong in the breakdown - transfers would double-count
     // money you still own, and income isn't spending at all.
     const m = {}; spends.forEach(t => { m[t.category_id] = (m[t.category_id]||0) + Number(t.amount); });
     const byCat = Object.entries(m).map(([id,value]) => ({ id, value, ...catMap[id] })).sort((a,b)=>b.value-a.value);
 
-    return { catMap, accMap, monthTxns, out, income, moved, net: income - out, byCat };
-  }, [data]);
+    return { catMap, accMap, monthTxns, out, income, moved, net: income - out, byCat,
+             active, present, people, owedToYou, youOwe, debtTotal };
+  }, [data, month]);
 
   if (!data) return <div style={S.boot}><div style={S.bootMark}>₹</div><div style={S.bootLabel}>Opening your passbook</div></div>;
 
   const { txns, categories, accounts, rules } = data;
-  const { catMap, accMap, monthTxns, out, income, moved, net, byCat } = view;
+  const { catMap, accMap, monthTxns, out, income, moved, net, byCat,
+          active, present, people, owedToYou, youOwe, debtTotal } = view;
+
+  const saveTxn = async (edited) => {
+    setBusy(true);
+    const r = await fetch("/api/transactions", {
+      method: "PATCH", headers: {"Content-Type":"application/json"}, body: JSON.stringify(edited),
+    });
+    const body = await r.json().catch(() => ({}));
+    setBusy(false);
+    if (!r.ok) return flash(body.error || "Could not save that change");
+    setSel(null); flash("Saved"); load();
+  };
+
+  const deleteTxn = async (id) => {
+    setBusy(true);
+    const r = await fetch("/api/transactions", {
+      method: "DELETE", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ id }),
+    });
+    setBusy(false);
+    if (!r.ok) return flash("Could not delete that entry");
+    setSel(null); flash("Deleted"); load();
+  };
+
+  const addDebt = async (payload) => {
+    const r = await fetch("/api/debts", {
+      method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(payload),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) return flash(body.error || "Could not add that");
+    flash("Added"); load();
+  };
+
+  const payDebt = async (id, paid) => {
+    const r = await fetch("/api/debts", {
+      method: "PATCH", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ id, paid }),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) return flash(body.error || "Could not record that payment");
+    flash(body.outstanding > 0 ? `${inr(body.outstanding)} left` : "Cleared"); load();
+  };
+
+  const removeDebt = async (id) => {
+    await fetch("/api/debts", {
+      method: "DELETE", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ id }),
+    });
+    flash("Removed"); load();
+  };
 
   const runSMS = () => {
     const parts = splitMessages(blob);
@@ -112,10 +199,21 @@ export default function Page() {
       <div style={S.main}>
         {tab === "home" && (
           <>
+            <div style={S.monthBar}>
+              <button style={S.monthNav} onClick={()=>setMonth(shiftMonth(active,-1))}>‹</button>
+              <span style={S.monthName}>{fmtMonth(active)}</span>
+              <button style={{...S.monthNav, opacity: active >= thisMonth() ? 0.3 : 1}}
+                disabled={active >= thisMonth()} onClick={()=>setMonth(shiftMonth(active,1))}>›</button>
+            </div>
             <div style={S.slab}>
-              <div style={S.slabLabel}>Spent this month</div>
+              <div style={S.slabLabel}>Spent</div>
               <div style={S.slabAmt}>{inr(out)}</div>
-              <div style={S.slabMeta}>{monthTxns.length} entries</div>
+              <div style={S.slabMeta}>
+                {monthTxns.length} entries
+                {monthTxns.length === 0 && present.length > 0 &&
+                  <> · <button style={S.linkBtn} onClick={()=>setMonth(present[present.length-1])}>
+                    jump to {fmtMonth(present[present.length-1])}</button></>}
+              </div>
             </div>
 
             <div style={S.statRow}>
@@ -152,7 +250,7 @@ export default function Page() {
             )}
             <div style={S.card}>
               <div style={S.cardHead}>Latest</div>
-              {monthTxns.slice(0,8).map(t => <Row key={t.id} t={t} cat={catMap[t.category_id]} acc={accMap[t.account_id]} kind={kindOf(t, catMap)} />)}
+              {monthTxns.slice(0,8).map(t => <Row key={t.id} t={t} cat={catMap[t.category_id]} acc={accMap[t.account_id]} kind={kindOf(t, catMap)} onOpen={()=>setSel(t)} />)}
               {monthTxns.length === 0 && <div style={S.empty}>Nothing logged yet. Import bank messages to start.</div>}
             </div>
           </>
@@ -169,8 +267,54 @@ export default function Page() {
             {(() => {
               const shown = kindFilter === "all" ? txns : txns.filter(t => kindOf(t, catMap) === kindFilter);
               if (!shown.length) return <div style={S.empty}>Nothing here yet.</div>;
-              return shown.map(t => <Row key={t.id} t={t} cat={catMap[t.category_id]} acc={accMap[t.account_id]} kind={kindOf(t, catMap)} />);
+              return shown.map(t => <Row key={t.id} t={t} cat={catMap[t.category_id]} acc={accMap[t.account_id]} kind={kindOf(t, catMap)} onOpen={()=>setSel(t)} />);
             })()}
+          </div>
+        )}
+
+        {tab === "owed" && (
+          <div style={{padding:"16px"}}>
+            <div style={S.statRow}>
+              <div style={S.stat}>
+                <div style={S.statLabel}>Owed to you</div>
+                <div style={{...S.statAmt, color:"#4BB6A8"}}>{inr(owedToYou, true)}</div>
+              </div>
+              <div style={S.stat}>
+                <div style={S.statLabel}>You owe</div>
+                <div style={{...S.statAmt, color: (youOwe+debtTotal) > 0 ? "#EF6F63" : "#E8EDF5"}}>
+                  {inr(youOwe + debtTotal, true)}
+                </div>
+              </div>
+            </div>
+
+            <div style={{...S.cardHead, marginTop:22}}>People</div>
+            {people.length === 0 && (
+              <p style={S.help}>
+                Nothing tracked yet. Open any transaction and set its category to
+                <b> Lent / Borrowed</b>, then name the person — balances build up from there.
+              </p>
+            )}
+            {people.map(p => (
+              <div key={p.name} style={S.row}>
+                <span style={{...S.chip, background:"#C98A5E22", color:"#C98A5E"}}>🤝</span>
+                <div style={{flex:1, minWidth:0, textAlign:"left"}}>
+                  <div style={{fontSize:14}}>{p.name}</div>
+                  <div style={S.small}>{p.balance > 0 ? "owes you" : "you owe them"}</div>
+                </div>
+                <span style={{color: p.balance > 0 ? "#4BB6A8" : "#EF6F63", whiteSpace:"nowrap"}}>
+                  {inr(p.balance).slice(1)}
+                </span>
+              </div>
+            ))}
+
+            <div style={{...S.cardHead, marginTop:26}}>Loans & debts</div>
+            <DebtForm onAdd={addDebt} />
+            {(data.debts||[]).map(d => (
+              <DebtRow key={d.id} debt={d} onPay={payDebt} onRemove={removeDebt} />
+            ))}
+            {(data.debts||[]).length === 0 && (
+              <p style={S.help}>Add a loan or card balance to track what's left to pay.</p>
+            )}
           </div>
         )}
 
@@ -241,27 +385,192 @@ export default function Page() {
       </div>
 
       <nav style={S.tabs}>
-        {[["home","Summary"],["log","Ledger"],["import","Import"]].map(([id,label])=>(
+        {[["home","Summary"],["log","Ledger"],["owed","Owed"],["import","Import"]].map(([id,label])=>(
           <button key={id} style={{...S.tab, color: tab===id?"#E8EDF5":"#8494AC"}} onClick={()=>setTab(id)}>{label}</button>
         ))}
       </nav>
+      {sel && (
+        <DetailSheet txn={sel} categories={categories} accMap={accMap} busy={busy}
+          onClose={()=>setSel(null)} onSave={saveTxn} onDelete={deleteTxn} />
+      )}
       {toast && <div style={S.toast}>{toast}</div>}
     </div>
   );
 }
 
-function Row({ t, cat, acc, kind }) {
+function Row({ t, cat, acc, kind, onOpen }) {
   // Transfers are deliberately muted and unsigned - the money didn't leave.
   const tone = kind === "income" ? "#4BB6A8" : kind === "transfer" ? "#8494AC" : "#E8EDF5";
   const sign = kind === "income" ? "+" : kind === "transfer" ? "" : "−";
   return (
-    <div style={S.row}>
+    <button style={S.row} onClick={onOpen}>
       <span style={{...S.chip, background:(cat?.color||"#666")+"22", color:cat?.color||"#666"}}>{cat?.icon||"❔"}</span>
-      <div style={{flex:1, minWidth:0}}>
-        <div style={{fontSize:14}}>{t.merchant}</div>
-        <div style={S.small}>{t.date} · {cat?.name} {acc ? `· ${acc.name}` : ""}</div>
+      <div style={{flex:1, minWidth:0, textAlign:"left"}}>
+        <div style={{fontSize:14, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{t.merchant}</div>
+        <div style={S.small}>{fmtDay(t.date)} · {cat?.name}{t.person ? ` · ${t.person}` : ""} {acc ? `· ${acc.name}` : ""}</div>
       </div>
       <span style={{color: tone, whiteSpace:"nowrap"}}>{sign}{inr(t.amount).slice(1)}</span>
+    </button>
+  );
+}
+
+// Tap a row to see what the bank actually said and correct how it was filed.
+function DetailSheet({ txn, categories, accMap, busy, onClose, onSave, onDelete }) {
+  const [form, setForm] = useState({
+    id: txn.id, amount: String(txn.amount), type: txn.type,
+    merchant: txn.merchant || "", note: txn.note || "",
+    category_id: txn.category_id || "other", person: txn.person || "",
+  });
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const cat = categories.find(c => c.id === form.category_id);
+
+  return (
+    <div style={S.overlay} onClick={onClose}>
+      <div style={S.sheet} onClick={e=>e.stopPropagation()}>
+        <div style={S.sheetGrab} />
+        <div style={S.sheetHead}>
+          <span>{fmtDay(txn.date)}{txn.time ? ` · ${txn.time}` : ""}</span>
+          <span style={S.small}>{accMap[txn.account_id]?.name || txn.source || ""}</span>
+        </div>
+
+        <label style={S.field}>
+          <span style={S.fieldLabel}>Who / what</span>
+          <input style={S.input} value={form.merchant} onChange={e=>set("merchant", e.target.value)} />
+        </label>
+
+        <div style={{display:"flex", gap:10}}>
+          <label style={{...S.field, flex:1}}>
+            <span style={S.fieldLabel}>Amount</span>
+            <input style={S.input} inputMode="decimal" value={form.amount} onChange={e=>set("amount", e.target.value)} />
+          </label>
+          <label style={{...S.field, flex:1}}>
+            <span style={S.fieldLabel}>Direction</span>
+            <select style={S.input} value={form.type} onChange={e=>set("type", e.target.value)}>
+              <option value="debit">Money out</option>
+              <option value="credit">Money in</option>
+            </select>
+          </label>
+        </div>
+
+        <label style={S.field}>
+          <span style={S.fieldLabel}>Category</span>
+          <select style={S.input} value={form.category_id} onChange={e=>set("category_id", e.target.value)}>
+            {["expense","income","transfer"].map(group => (
+              <optgroup key={group} label={group === "expense" ? "Spending" : group === "income" ? "Money in" : "Not spending"}>
+                {categories.filter(c=>c.kind===group).map(c => (
+                  <option key={c.id} value={c.id}>{c.icon} {c.name}</option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+          <span style={S.hint}>
+            {cat?.kind === "transfer" && "Won't count as spending — money you still own."}
+            {cat?.kind === "income" && "Counts as money in."}
+            {cat?.kind === "expense" && "Counts as spending."}
+          </span>
+        </label>
+
+        {form.category_id === "people" && (
+          <label style={S.field}>
+            <span style={S.fieldLabel}>Person</span>
+            <input style={S.input} placeholder="Name" value={form.person} onChange={e=>set("person", e.target.value)} />
+            <span style={S.hint}>
+              {form.type === "debit"
+                ? "Money you gave them — they owe you, or it repays what you owed."
+                : "Money they gave you — you owe them, or it settles what they owed."}
+            </span>
+          </label>
+        )}
+
+        <label style={S.field}>
+          <span style={S.fieldLabel}>Note</span>
+          <input style={S.input} placeholder="Optional" value={form.note} onChange={e=>set("note", e.target.value)} />
+        </label>
+
+        {txn.raw && (
+          <div style={S.field}>
+            <span style={S.fieldLabel}>What the bank sent</span>
+            <div style={S.rawBox}>{txn.raw}</div>
+          </div>
+        )}
+
+        <button style={{...S.btnPrimary, marginTop:6}} disabled={busy}
+          onClick={()=>onSave({ ...form, amount: Number(form.amount) })}>
+          {busy ? "Saving…" : "Save"}
+        </button>
+        {confirmDelete ? (
+          <div style={S.confirmRow}>
+            <span style={S.small}>Delete this entry?</span>
+            <span>
+              <button style={S.linkBtn} onClick={()=>setConfirmDelete(false)}>Keep</button>
+              <button style={{...S.linkBtn, color:"#EF6F63"}} onClick={()=>onDelete(txn.id)}>Delete</button>
+            </span>
+          </div>
+        ) : (
+          <button style={S.btnGhost} onClick={()=>setConfirmDelete(true)}>Delete</button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DebtForm({ onAdd }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [principal, setPrincipal] = useState("");
+
+  if (!open) return <button style={S.btnGhost} onClick={()=>setOpen(true)}>+ Add a loan or debt</button>;
+  return (
+    <div style={S.slip}>
+      <div style={{flex:1}}>
+        <input style={{...S.input, marginBottom:8}} placeholder="Car loan, HDFC card…" value={name} onChange={e=>setName(e.target.value)} />
+        <input style={{...S.input, marginBottom:8}} inputMode="decimal" placeholder="Amount owed" value={principal} onChange={e=>setPrincipal(e.target.value)} />
+        <div style={{display:"flex", gap:8}}>
+          <button style={{...S.btnPrimary, flex:1}} disabled={!name.trim() || !(Number(principal)>0)}
+            onClick={()=>{ onAdd({ name, principal: Number(principal) }); setName(""); setPrincipal(""); setOpen(false); }}>
+            Add
+          </button>
+          <button style={{...S.btnGhost, flex:1, marginTop:0}} onClick={()=>setOpen(false)}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DebtRow({ debt, onPay, onRemove }) {
+  const [paying, setPaying] = useState(false);
+  const [amount, setAmount] = useState("");
+  const outstanding = Number(debt.outstanding);
+  const principal = Number(debt.principal) || 1;
+  const cleared = Math.min(100, Math.max(0, (1 - outstanding / principal) * 100));
+
+  return (
+    <div style={{...S.slip, flexDirection:"column", gap:8}}>
+      <div style={{display:"flex", justifyContent:"space-between", width:"100%"}}>
+        <b style={{fontSize:14}}>{debt.name}</b>
+        <span style={{color: outstanding > 0 ? "#EF6F63" : "#4BB6A8"}}>
+          {outstanding > 0 ? inr(outstanding) : "Cleared"}
+        </span>
+      </div>
+      <div style={S.barTrack}><div style={{...S.barFill, width:`${cleared}%`}} /></div>
+      <div style={{display:"flex", justifyContent:"space-between", width:"100%", alignItems:"center"}}>
+        <span style={S.small}>{inr(principal - outstanding)} of {inr(principal)} paid</span>
+        {paying ? (
+          <span style={{display:"flex", gap:6}}>
+            <input style={{...S.input, width:100, padding:8}} inputMode="decimal" autoFocus
+              placeholder="Amount" value={amount} onChange={e=>setAmount(e.target.value)} />
+            <button style={S.linkBtn} disabled={!(Number(amount)>0)}
+              onClick={()=>{ onPay(debt.id, Number(amount)); setAmount(""); setPaying(false); }}>Save</button>
+            <button style={S.linkBtn} onClick={()=>setPaying(false)}>×</button>
+          </span>
+        ) : (
+          <span>
+            {outstanding > 0 && <button style={S.linkBtn} onClick={()=>setPaying(true)}>Record payment</button>}
+            <button style={{...S.linkBtn, color:"#8494AC"}} onClick={()=>onRemove(debt.id)}>Remove</button>
+          </span>
+        )}
+      </div>
     </div>
   );
 }
@@ -280,7 +589,26 @@ const S = {
   statAmt: { fontSize:17, fontWeight:500, marginTop:3 },
   movedNote: { fontSize:11, color:"#8494AC", padding:"10px 16px", lineHeight:1.5 },
   card: { padding:"16px", borderTop:"1px solid #2A3549" }, cardHead: { fontSize:12, color:"#8494AC", textTransform:"uppercase", marginBottom:10 },
-  row: { display:"flex", alignItems:"center", gap:10, padding:"10px 0", borderBottom:"1px solid #2A354980" },
+  row: { display:"flex", alignItems:"center", gap:10, padding:"10px 0", borderBottom:"1px solid #2A354980",
+         width:"100%", background:"none", border:"none", borderBottomStyle:"solid", color:"#E8EDF5", fontSize:14, textAlign:"left" },
+  monthBar: { display:"flex", alignItems:"center", justifyContent:"space-between", padding:"10px 16px 0" },
+  monthNav: { background:"none", border:"none", color:"#F2C14E", fontSize:26, lineHeight:1, padding:"0 12px" },
+  monthName: { fontSize:13, color:"#8494AC", textTransform:"uppercase", letterSpacing:1 },
+  overlay: { position:"fixed", inset:0, background:"#00000088", display:"flex", alignItems:"flex-end", zIndex:20 },
+  sheet: { width:"100%", maxHeight:"88vh", overflowY:"auto", background:"#141B29", borderTopLeftRadius:18, borderTopRightRadius:18,
+           padding:"10px 16px calc(20px + env(safe-area-inset-bottom))", border:"1px solid #2A3549" },
+  sheetGrab: { width:38, height:4, borderRadius:2, background:"#2A3549", margin:"2px auto 14px" },
+  sheetHead: { display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:12, color:"#8494AC", marginBottom:14 },
+  field: { display:"block", marginBottom:12 },
+  fieldLabel: { display:"block", fontSize:10, color:"#8494AC", textTransform:"uppercase", letterSpacing:0.4, marginBottom:5 },
+  input: { width:"100%", background:"#171F2E", border:"1px solid #2A3549", borderRadius:10, color:"#E8EDF5", padding:11, fontSize:15, boxSizing:"border-box" },
+  hint: { display:"block", fontSize:11, color:"#8494AC", marginTop:5, lineHeight:1.5 },
+  rawBox: { background:"#0E1420", border:"1px solid #2A3549", borderRadius:10, padding:11, fontSize:11,
+            color:"#8494AC", fontFamily:"monospace", lineHeight:1.6, wordBreak:"break-word" },
+  btnGhost: { width:"100%", background:"none", border:"1px solid #2A3549", color:"#8494AC", borderRadius:12, padding:12, fontSize:14, marginTop:8 },
+  confirmRow: { display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:10 },
+  barTrack: { width:"100%", height:5, background:"#0E1420", borderRadius:3, overflow:"hidden" },
+  barFill: { height:"100%", background:"#4BB6A8" },
   chip: { width:32, height:32, borderRadius:9, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 },
   small: { fontSize:11, color:"#8494AC" }, empty: { padding:"30px 0", textAlign:"center", color:"#8494AC", fontSize:13 },
   help: { fontSize:13, color:"#8494AC", lineHeight:1.6 },
