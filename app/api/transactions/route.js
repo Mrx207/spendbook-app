@@ -1,4 +1,4 @@
-import { ensureSchema, sql } from "@/lib/db";
+import { ensureSchema, sql, query } from "@/lib/db";
 import { uid, categorise } from "@/lib/parser";
 
 export const runtime = "nodejs";
@@ -13,16 +13,46 @@ export async function GET() {
   return Response.json({ txns, categories, accounts, rules, rates });
 }
 
-// Manual add from the dashboard
+const COLS = ["id","type","amount","date","time","merchant","note","category_id",
+  "account_id","source","ref","raw","fx_amount","fx_currency","estimated"];
+
+const toRow = (t, fallbackSource) => [
+  t.id || uid(), t.type, t.amount, t.date, t.time || "", t.merchant || "Unknown", t.note || "",
+  t.category_id ?? t.categoryId ?? null, t.account_id ?? t.accountId ?? null,
+  t.source || fallbackSource, t.ref || null, t.raw || "",
+  t.fxAmount ?? null, t.fxCurrency ?? null, !!t.estimated,
+];
+
+// Accepts either a single transaction or { txns: [...] } from an import.
+// Statements run to hundreds of rows, so they go in as one multi-row insert
+// rather than a request per row.
 export async function POST(req) {
   await ensureSchema();
-  const t = await req.json();
-  const id = uid();
-  await sql`INSERT INTO transactions
-    (id,type,amount,date,time,merchant,note,category_id,account_id,source,ref,raw,fx_amount,fx_currency,estimated)
-    VALUES (${id},${t.type},${t.amount},${t.date},${t.time||""},${t.merchant},${t.note||""},
-      ${t.categoryId},${t.accountId},${"manual"},${null},${""},${null},${null},${false})`;
-  return Response.json({ id });
+  const body = await req.json().catch(() => null);
+  if (!body) return Response.json({ error: "Bad request body" }, { status: 400 });
+
+  const list = Array.isArray(body.txns) ? body.txns : [body];
+  const valid = list.filter(t => t && t.type && t.date && Number(t.amount) > 0);
+  if (!valid.length) return Response.json({ error: "No valid transactions" }, { status: 400 });
+
+  const rows = valid.map(t => toRow(t, Array.isArray(body.txns) ? "statement" : "manual"));
+
+  // Chunked to stay well under Postgres' bind-parameter ceiling.
+  const perChunk = Math.floor(30000 / COLS.length);
+  let added = 0;
+  for (let i = 0; i < rows.length; i += perChunk) {
+    const chunk = rows.slice(i, i + perChunk);
+    const values = [];
+    const tuples = chunk.map((row, r) =>
+      `(${row.map((v, c) => { values.push(v); return `$${r * COLS.length + c + 1}`; }).join(",")})`
+    );
+    const res = await query(
+      `INSERT INTO transactions (${COLS.join(",")}) VALUES ${tuples.join(",")} ON CONFLICT (id) DO NOTHING`,
+      values,
+    );
+    added += res.rowCount;
+  }
+  return Response.json({ added });
 }
 
 export async function PATCH(req) {

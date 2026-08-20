@@ -21,6 +21,7 @@ export default function Page() {
   const [draft, setDraft] = useState(null);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState("");
+  const fileRef = React.useRef(null);
 
   const load = () => fetch("/api/transactions").then(r=>r.json()).then(setData);
   useEffect(() => { load(); }, []);
@@ -69,16 +70,32 @@ export default function Page() {
     setDraft(rows);
   };
 
+  const uploadStatement = async (file) => {
+    if (!file) return;
+    setBusy(true);
+    const form = new FormData();
+    form.append("file", file);
+    const r = await fetch("/api/import", { method: "POST", body: form });
+    const body = await r.json().catch(() => ({}));
+    setBusy(false);
+    if (fileRef.current) fileRef.current.value = "";
+    if (!r.ok) return flash(body.error || "Could not read that file");
+    setDraft(body.draft);
+    const dupes = body.draft.filter(d => d.dup !== "new").length;
+    flash(`${body.draft.length} rows read${dupes ? `, ${dupes} already in ledger` : ""}`);
+  };
+
   const commitDraft = async () => {
     setBusy(true);
     const keep = draft.filter(d=>d.keep);
-    for (const d of keep) {
-      await fetch("/api/transactions", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({
-        type: d.txn.type, amount: d.txn.amount, date: d.txn.date, time: d.txn.time,
-        merchant: d.txn.merchant, categoryId: d.txn.category_id, accountId: d.txn.account_id,
-      })});
-    }
-    setBusy(false); setDraft(null); setBlob(""); flash(`${keep.length} entries added`);
+    const r = await fetch("/api/transactions", {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ txns: keep.map(d => d.txn) }),
+    });
+    const body = await r.json().catch(() => ({}));
+    setBusy(false);
+    if (!r.ok) return flash(body.error || "Could not save those entries");
+    setDraft(null); setBlob(""); flash(`${body.added} entries added`);
     load(); setTab("log");
   };
 
@@ -121,7 +138,16 @@ export default function Page() {
 
         {tab === "import" && !draft && (
           <div style={{padding:"16px"}}>
-            <p style={S.help}>Paste bank SMS text — one or many, separated by blank lines.</p>
+            <div style={S.cardHead}>Upload a statement</div>
+            <p style={S.help}>CSV or Excel (.xlsx) exported from your bank. Columns are detected automatically.</p>
+            <input ref={fileRef} type="file" accept=".csv,.xlsx,.xlsm,text/csv" style={{display:"none"}}
+              onChange={e => uploadStatement(e.target.files?.[0])} />
+            <button style={{...S.btnSecondary, marginTop:10}} disabled={busy} onClick={()=>fileRef.current?.click()}>
+              {busy ? "Reading…" : "Choose file"}
+            </button>
+
+            <div style={{...S.cardHead, marginTop:28}}>Or paste bank SMS</div>
+            <p style={S.help}>One message or many, separated by blank lines.</p>
             <textarea style={S.textarea} rows={8} value={blob} onChange={e=>setBlob(e.target.value)}
               placeholder="Rs.450.00 debited from a/c XX1234 to VPA swiggy@ybl on 20-08-26..." />
             <button style={S.btnPrimary} onClick={runSMS} disabled={!blob.trim()}>Read messages</button>
@@ -144,6 +170,15 @@ export default function Page() {
 
         {tab === "import" && draft && (
           <div style={{padding:"12px 16px"}}>
+            <div style={S.draftBar}>
+              <span>{draft.filter(d=>d.keep).length} of {draft.length} selected</span>
+              <span>
+                <button style={S.linkBtn} onClick={()=>setDraft(draft.map(x=>({...x,keep:true})))}>All</button>
+                <button style={S.linkBtn} onClick={()=>setDraft(draft.map(x=>({...x,keep:false})))}>None</button>
+                <button style={S.linkBtn} onClick={()=>setDraft(draft.map(x=>({...x,keep:x.dup==="new"})))}>New only</button>
+                <button style={S.linkBtn} onClick={()=>setDraft(null)}>Cancel</button>
+              </span>
+            </div>
             {draft.map((d,i) => (
               <div key={d.txn.id} style={{...S.slip, opacity: d.keep?1:0.5}}>
                 <button style={S.check} onClick={()=>setDraft(draft.map((x,j)=>j===i?{...x,keep:!x.keep}:x))}>{d.keep?"✓":""}</button>
@@ -190,7 +225,8 @@ function Row({ t, cat, acc }) {
 
 const S = {
   root: { position:"fixed", inset:0, background:"#0E1420", color:"#E8EDF5", fontFamily:"system-ui", display:"flex", flexDirection:"column" },
-  main: { flex:1, overflowY:"auto" },
+  // Keeps content clear of the notch and the home indicator once installed.
+  main: { flex:1, overflowY:"auto", paddingTop:"env(safe-area-inset-top)", WebkitOverflowScrolling:"touch" },
   boot: { position:"fixed", inset:0, background:"#0E1420", color:"#F2C14E", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", fontFamily:"system-ui" },
   bootMark: { fontSize:44 }, bootLabel: { color:"#8494AC", fontSize:13, marginTop:8 },
   slab: { padding:"20px 16px" }, slabLabel: { fontSize:11, color:"#8494AC", textTransform:"uppercase" },
@@ -203,11 +239,14 @@ const S = {
   steps: { fontSize:13, color:"#8494AC", lineHeight:1.7, paddingLeft:18, margin:"0 0 12px" },
   textarea: { width:"100%", background:"#171F2E", border:"1px solid #2A3549", borderRadius:11, color:"#E8EDF5", padding:12, fontSize:12, margin:"10px 0", fontFamily:"monospace" },
   btnPrimary: { width:"100%", background:"#F2C14E", color:"#141A12", border:"none", borderRadius:12, padding:14, fontWeight:600, fontSize:15 },
+  btnSecondary: { width:"100%", background:"#171F2E", color:"#E8EDF5", border:"1px solid #2A3549", borderRadius:12, padding:14, fontWeight:500, fontSize:15 },
   code: { background:"#171F2E", padding:"2px 6px", borderRadius:5, fontSize:11 },
   slip: { display:"flex", gap:10, background:"#171F2E", border:"1px solid #2A3549", borderRadius:12, padding:12, marginBottom:8 },
   check: { width:22, height:22, borderRadius:7, border:"1.5px solid #2A3549", background:"transparent", color:"#F2C14E", flexShrink:0 },
   badgeDup: { color:"#EF6F63" }, badgeMaybe: { color:"#F2C14E" },
-  tabs: { display:"flex", borderTop:"1px solid #2A3549", background:"#0E1420" },
+  draftBar: { display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:6, fontSize:12, color:"#8494AC", marginBottom:10 },
+  linkBtn: { background:"none", border:"none", color:"#F2C14E", fontSize:12, padding:"4px 6px" },
+  tabs: { display:"flex", borderTop:"1px solid #2A3549", background:"#0E1420", paddingBottom:"env(safe-area-inset-bottom)" },
   tab: { flex:1, background:"none", border:"none", padding:"14px 4px", fontSize:13 },
   toast: { position:"fixed", left:"50%", transform:"translateX(-50%)", bottom:70, background:"#212B3D", border:"1px solid #2A3549", borderRadius:11, padding:"10px 16px", fontSize:13 },
 };
