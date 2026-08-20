@@ -27,22 +27,30 @@ export default function Page() {
 
   const flash = (m) => { setToast(m); setTimeout(()=>setToast(""), 2200); };
 
+  // Everything derived from `data` lives in one memo above the early return so
+  // the hook count stays the same before and after the fetch resolves.
+  const view = useMemo(() => {
+    if (!data) return null;
+    const { txns, categories, accounts } = data;
+    const catMap = Object.fromEntries(categories.map(c=>[c.id,c]));
+    const accMap = Object.fromEntries(accounts.map(a=>[a.id,a]));
+    const isSpend = (t) => t.type === "debit" && !catMap[t.category_id]?.excluded;
+
+    const now = new Date();
+    const monthTxns = txns.filter(t => { const d = new Date(t.date); return d.getFullYear()===now.getFullYear() && d.getMonth()===now.getMonth(); });
+    const spends = monthTxns.filter(isSpend);
+    const out = spends.reduce((s,t)=>s+Number(t.amount),0);
+
+    const m = {}; spends.forEach(t => { m[t.category_id] = (m[t.category_id]||0) + Number(t.amount); });
+    const byCat = Object.entries(m).map(([id,value]) => ({ id, value, ...catMap[id] })).sort((a,b)=>b.value-a.value);
+
+    return { catMap, accMap, monthTxns, out, byCat };
+  }, [data]);
+
   if (!data) return <div style={S.boot}><div style={S.bootMark}>₹</div><div style={S.bootLabel}>Opening your passbook</div></div>;
 
   const { txns, categories, accounts, rules } = data;
-  const catMap = Object.fromEntries(categories.map(c=>[c.id,c]));
-  const accMap = Object.fromEntries(accounts.map(a=>[a.id,a]));
-  const isSpend = (t) => t.type === "debit" && !catMap[t.category_id]?.excluded;
-
-  const now = new Date();
-  const monthTxns = txns.filter(t => { const d = new Date(t.date); return d.getFullYear()===now.getFullYear() && d.getMonth()===now.getMonth(); });
-  const spends = monthTxns.filter(isSpend);
-  const out = spends.reduce((s,t)=>s+Number(t.amount),0);
-
-  const byCat = useMemo(() => {
-    const m = {}; spends.forEach(t => { m[t.category_id] = (m[t.category_id]||0) + Number(t.amount); });
-    return Object.entries(m).map(([id,value]) => ({ id, value, ...catMap[id] })).sort((a,b)=>b.value-a.value);
-  }, [spends]);
+  const { catMap, accMap, monthTxns, out, byCat } = view;
 
   const runSMS = () => {
     const parts = splitMessages(blob);
