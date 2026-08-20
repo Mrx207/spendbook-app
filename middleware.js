@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import { verifyToken } from "@/lib/auth";
 
-// Everything except Next's own static output goes through the gate.
+// Everything except Next's static output and the install assets goes through
+// the gate - iOS fetches the manifest and icons before anyone has logged in.
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|manifest.json).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|manifest.json|icon).*)"],
 };
 
 // The SMS webhook authenticates with its own shared secret, so it stays open
