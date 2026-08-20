@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "node tests/statement.test.mjs && node tests/xlsx.test.mjs && node tests/kind.test.mjs"
+    "test": "node tests/sms.test.mjs && node tests/statement.test.mjs && node tests/xlsx.test.mjs && node tests/kind.test.mjs"
   },
   "dependencies": {
     "exceljs": "^4.4.0",

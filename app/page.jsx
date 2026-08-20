@@ -41,6 +41,10 @@ export default function Page() {
   const [kindFilter, setKindFilter] = useState("all");
   const [month, setMonth] = useState(null);
   const [sel, setSel] = useState(null);
+  const [search, setSearch] = useState("");
+  const [catFilter, setCatFilter] = useState("all");
+  const [visible, setVisible] = useState(200);
+  const [openPerson, setOpenPerson] = useState(null);
   const fileRef = React.useRef(null);
 
   const load = () => fetch("/api/transactions").then(r=>r.json()).then(setData);
@@ -123,6 +127,21 @@ export default function Page() {
     setBusy(false);
     if (!r.ok) return flash("Could not delete that entry");
     setSel(null); flash("Deleted"); load();
+  };
+
+  // Cash lending never reaches a bank feed, so it has to be recordable by hand.
+  const addLending = async ({ person, amount, type, merchant, date }) => {
+    const r = await fetch("/api/transactions", {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({
+        type, amount, date: date || dayOf(new Date().toISOString()),
+        merchant: merchant || person, category_id: "people", person,
+        source: "manual", raw: "",
+      }),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) return flash(body.error || "Could not record that");
+    flash("Recorded"); load();
   };
 
   const addDebt = async (payload) => {
@@ -260,16 +279,52 @@ export default function Page() {
 
         {tab === "log" && (
           <div style={{padding:"12px 16px"}}>
+            <div style={S.searchWrap}>
+              <input style={S.input} value={search} onChange={e=>{setSearch(e.target.value); setVisible(200);}}
+                placeholder="Search name, note, amount or bank text" />
+              {search && <button style={S.clearBtn} onClick={()=>setSearch("")}>×</button>}
+            </div>
             <div style={S.filterRow}>
               {[["all","All"],["expense","Spending"],["income","Income"],["transfer","Transfers"]].map(([id,label])=>(
-                <button key={id} onClick={()=>setKindFilter(id)}
+                <button key={id} onClick={()=>{setKindFilter(id); setVisible(200);}}
                   style={{...S.filterChip, ...(kindFilter===id ? S.filterChipOn : null)}}>{label}</button>
               ))}
             </div>
+            <select style={{...S.input, marginBottom:12}} value={catFilter}
+              onChange={e=>{setCatFilter(e.target.value); setVisible(200);}}>
+              <option value="all">Every category</option>
+              {categories.map(c => <option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}
+            </select>
             {(() => {
-              const shown = kindFilter === "all" ? txns : txns.filter(t => kindOf(t, catMap) === kindFilter);
-              if (!shown.length) return <div style={S.empty}>Nothing here yet.</div>;
-              return shown.map(t => <Row key={t.id} t={t} cat={catMap[t.category_id]} acc={accMap[t.account_id]} kind={kindOf(t, catMap)} onOpen={()=>setSel(t)} />);
+              const q = search.trim().toLowerCase();
+              const shown = txns.filter(t => {
+                if (kindFilter !== "all" && kindOf(t, catMap) !== kindFilter) return false;
+                if (catFilter !== "all" && t.category_id !== catFilter) return false;
+                if (!q) return true;
+                // Searching the original bank text too, since the tidied-up
+                // merchant name often drops the detail worth searching for.
+                return [t.merchant, t.note, t.person, t.raw, catMap[t.category_id]?.name, String(t.amount)]
+                  .some(v => (v || "").toLowerCase().includes(q));
+              });
+              const total = shown.reduce((s,t)=>s+Number(t.amount),0);
+              return (
+                <>
+                  <div style={S.resultBar}>
+                    <span>{shown.length} {shown.length === 1 ? "entry" : "entries"}</span>
+                    <span>{inr(total, true)}</span>
+                  </div>
+                  {!shown.length && <div style={S.empty}>Nothing matches that.</div>}
+                  {shown.slice(0, visible).map(t => (
+                    <Row key={t.id} t={t} cat={catMap[t.category_id]} acc={accMap[t.account_id]}
+                      kind={kindOf(t, catMap)} onOpen={()=>setSel(t)} />
+                  ))}
+                  {shown.length > visible && (
+                    <button style={S.btnGhost} onClick={()=>setVisible(v=>v+200)}>
+                      Show more ({shown.length - visible} left)
+                    </button>
+                  )}
+                </>
+              );
             })()}
           </div>
         )}
@@ -290,24 +345,48 @@ export default function Page() {
             </div>
 
             <div style={{...S.cardHead, marginTop:22}}>People</div>
+            <LendForm people={people} onAdd={addLending} />
             {people.length === 0 && (
               <p style={S.help}>
-                Nothing tracked yet. Open any transaction and set its category to
-                <b> Lent / Borrowed</b>, then name the person — balances build up from there.
+                Nothing tracked yet. Record a loan above, or open any transaction and set its
+                category to <b>Lent / Borrowed</b> — balances build up from either.
               </p>
             )}
-            {people.map(p => (
-              <div key={p.name} style={S.row}>
-                <span style={{...S.chip, background:"#C98A5E22", color:"#C98A5E"}}>🤝</span>
-                <div style={{flex:1, minWidth:0, textAlign:"left"}}>
-                  <div style={{fontSize:14}}>{p.name}</div>
-                  <div style={S.small}>{p.balance > 0 ? "owes you" : "you owe them"}</div>
+            {people.map(p => {
+              const entries = txns.filter(t => (t.person||"").trim() === p.name);
+              const open = openPerson === p.name;
+              return (
+                <div key={p.name}>
+                  <button style={S.row} onClick={()=>setOpenPerson(open ? null : p.name)}>
+                    <span style={{...S.chip, background:"#C98A5E22", color:"#C98A5E"}}>🤝</span>
+                    <div style={{flex:1, minWidth:0, textAlign:"left"}}>
+                      <div style={{fontSize:14}}>{p.name}</div>
+                      <div style={S.small}>
+                        {p.balance > 0 ? "owes you" : "you owe them"} · {entries.length} {entries.length===1?"entry":"entries"}
+                      </div>
+                    </div>
+                    <span style={{color: p.balance > 0 ? "#4BB6A8" : "#EF6F63", whiteSpace:"nowrap"}}>
+                      {inr(p.balance).slice(1)}
+                    </span>
+                  </button>
+                  {open && (
+                    <div style={S.personBody}>
+                      {entries.map(t => (
+                        <Row key={t.id} t={t} cat={catMap[t.category_id]} acc={accMap[t.account_id]}
+                          kind={kindOf(t, catMap)} onOpen={()=>setSel(t)} />
+                      ))}
+                      <button style={S.btnGhost} onClick={()=>addLending({
+                        person: p.name, amount: Math.abs(p.balance),
+                        type: p.balance > 0 ? "credit" : "debit",
+                        merchant: p.balance > 0 ? `Settled up with ${p.name}` : `Repaid ${p.name}`,
+                      })}>
+                        Settle up — record {inr(Math.abs(p.balance))} {p.balance > 0 ? "received" : "paid"}
+                      </button>
+                    </div>
+                  )}
                 </div>
-                <span style={{color: p.balance > 0 ? "#4BB6A8" : "#EF6F63", whiteSpace:"nowrap"}}>
-                  {inr(p.balance).slice(1)}
-                </span>
-              </div>
-            ))}
+              );
+            })}
 
             <div style={{...S.cardHead, marginTop:26}}>Loans & debts</div>
             <DebtForm onAdd={addDebt} />
@@ -534,6 +613,44 @@ function DetailSheet({ txn, categories, accMap, txns, busy, onClose, onSave, onD
   );
 }
 
+function LendForm({ people, onAdd }) {
+  const [open, setOpen] = useState(false);
+  const [person, setPerson] = useState("");
+  const [amount, setAmount] = useState("");
+  const [dir, setDir] = useState("debit");
+
+  if (!open) return <button style={S.btnGhost} onClick={()=>setOpen(true)}>+ Record lending or borrowing</button>;
+  const ready = person.trim() && Number(amount) > 0;
+  return (
+    <div style={{...S.slip, flexDirection:"column", gap:8}}>
+      <input style={S.input} placeholder="Name" value={person} list="known-people"
+        onChange={e=>setPerson(e.target.value)} />
+      <datalist id="known-people">
+        {people.map(p => <option key={p.name} value={p.name} />)}
+      </datalist>
+      <input style={S.input} inputMode="decimal" placeholder="Amount" value={amount} onChange={e=>setAmount(e.target.value)} />
+      <select style={S.input} value={dir} onChange={e=>setDir(e.target.value)}>
+        <option value="debit">I gave them money</option>
+        <option value="credit">They gave me money</option>
+      </select>
+      <span style={S.hint}>
+        {dir === "debit"
+          ? "Adds to what they owe you, or reduces what you owe them."
+          : "Adds to what you owe them, or reduces what they owe you."}
+      </span>
+      <div style={{display:"flex", gap:8, width:"100%"}}>
+        <button style={{...S.btnPrimary, flex:1}} disabled={!ready}
+          onClick={()=>{
+            onAdd({ person: person.trim(), amount: Number(amount), type: dir,
+                    merchant: dir === "debit" ? `Gave ${person.trim()}` : `Got from ${person.trim()}` });
+            setPerson(""); setAmount(""); setOpen(false);
+          }}>Record</button>
+        <button style={{...S.btnGhost, flex:1, marginTop:0}} onClick={()=>setOpen(false)}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
 function DebtForm({ onAdd }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -629,6 +746,12 @@ const S = {
   remember: { display:"flex", gap:9, alignItems:"flex-start", background:"#171F2E", border:"1px solid #2A3549",
               borderRadius:10, padding:11, fontSize:12, color:"#8494AC", lineHeight:1.5, marginBottom:4 },
   barTrack: { width:"100%", height:5, background:"#0E1420", borderRadius:3, overflow:"hidden" },
+  searchWrap: { position:"relative", marginBottom:10 },
+  clearBtn: { position:"absolute", right:6, top:"50%", transform:"translateY(-50%)", background:"none",
+              border:"none", color:"#8494AC", fontSize:20, padding:"0 8px" },
+  resultBar: { display:"flex", justifyContent:"space-between", fontSize:11, color:"#8494AC",
+               padding:"0 0 8px", borderBottom:"1px solid #2A354980", marginBottom:4 },
+  personBody: { paddingLeft:12, borderLeft:"2px solid #C98A5E44", marginLeft:14, marginBottom:10 },
   barFill: { height:"100%", background:"#4BB6A8" },
   chip: { width:32, height:32, borderRadius:9, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 },
   small: { fontSize:11, color:"#8494AC" }, empty: { padding:"30px 0", textAlign:"center", color:"#8494AC", fontSize:13 },
