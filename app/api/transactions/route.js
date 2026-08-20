@@ -14,13 +14,16 @@ export async function GET() {
 }
 
 const COLS = ["id","type","amount","date","time","merchant","note","category_id",
-  "account_id","source","ref","raw","fx_amount","fx_currency","estimated"];
+  "account_id","source","ref","raw","fx_amount","fx_currency","estimated","kind"];
 
-const toRow = (t, fallbackSource) => [
+const toRow = (t, fallbackSource, catKind) => [
   t.id || uid(), t.type, t.amount, t.date, t.time || "", t.merchant || "Unknown", t.note || "",
   t.category_id ?? t.categoryId ?? null, t.account_id ?? t.accountId ?? null,
   t.source || fallbackSource, t.ref || null, t.raw || "",
   t.fxAmount ?? null, t.fxCurrency ?? null, !!t.estimated,
+  // Resolved server-side from the category, so a client can't post a row whose
+  // kind disagrees with its category and skew the totals.
+  catKind[t.category_id ?? t.categoryId] || (t.type === "credit" ? "income" : "expense"),
 ];
 
 // Accepts either a single transaction or { txns: [...] } from an import.
@@ -35,7 +38,9 @@ export async function POST(req) {
   const valid = list.filter(t => t && t.type && t.date && Number(t.amount) > 0);
   if (!valid.length) return Response.json({ error: "No valid transactions" }, { status: 400 });
 
-  const rows = valid.map(t => toRow(t, Array.isArray(body.txns) ? "statement" : "manual"));
+  const { rows: cats } = await sql`SELECT id, kind FROM categories`;
+  const catKind = Object.fromEntries(cats.map(c => [c.id, c.kind]));
+  const rows = valid.map(t => toRow(t, Array.isArray(body.txns) ? "statement" : "manual", catKind));
 
   // Chunked to stay well under Postgres' bind-parameter ceiling.
   const perChunk = Math.floor(30000 / COLS.length);

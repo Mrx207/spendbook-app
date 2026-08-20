@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "test": "node tests/statement.test.mjs && node tests/xlsx.test.mjs && node tests/kind.test.mjs"
   },
   "dependencies": {
     "exceljs": "^4.4.0",

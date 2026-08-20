@@ -43,10 +43,12 @@ export async function POST(req) {
     const status = dupStatus(txn, existing);
     if (status === "exact") { dupes++; continue; }
 
+    const kind = categories.find(c => c.id === txn.category_id)?.kind
+      || (txn.type === "credit" ? "income" : "expense");
     await sql`INSERT INTO transactions
-      (id,type,amount,date,time,merchant,note,category_id,account_id,source,ref,raw,fx_amount,fx_currency,estimated)
+      (id,type,amount,date,time,merchant,note,category_id,account_id,source,ref,raw,fx_amount,fx_currency,estimated,kind)
       VALUES (${txn.id},${txn.type},${txn.amount},${txn.date},${txn.time},${txn.merchant},${txn.note||""},
-        ${txn.category_id},${account_id},${"sms-webhook"},${txn.ref},${txn.raw},${txn.fxAmount},${txn.fxCurrency},${!!txn.estimated})`;
+        ${txn.category_id},${account_id},${"sms-webhook"},${txn.ref},${txn.raw},${txn.fxAmount},${txn.fxCurrency},${!!txn.estimated},${kind})`;
     added++;
   }
 
