@@ -56,8 +56,11 @@ export async function PATCH(req) {
     return Response.json({ error: "Built-in categories keep their type. Make your own to choose." }, { status: 400 });
   }
 
+  const budget = c.budget === undefined || c.budget === null || c.budget === ""
+    ? Number(existing.budget) : Math.max(0, Number(c.budget) || 0);
+
   await sql`UPDATE categories SET name = ${name}, icon = ${c.icon || existing.icon},
-    color = ${c.color || existing.color}, kind = ${kind} WHERE id = ${c.id}`;
+    color = ${c.color || existing.color}, kind = ${kind}, budget = ${budget} WHERE id = ${c.id}`;
   // Rows already filed here follow the category if its type changed.
   if (kind !== existing.kind) {
     await sql`UPDATE transactions SET kind = ${kind} WHERE category_id = ${c.id}`;

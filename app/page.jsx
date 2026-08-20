@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
 import { parseSMS, splitMessages, categorise, matchAccount, dupStatus, settle, kindOf } from "@/lib/parser";
+import { summarise, compareMonths, findRecurring, backlog } from "@/lib/insights";
 
 const inr = (n, compact = false) => {
   const v = Math.abs(Number(n) || 0);
@@ -46,6 +47,9 @@ export default function Page() {
   const [visible, setVisible] = useState(200);
   const [openPerson, setOpenPerson] = useState(null);
   const [showCats, setShowCats] = useState(false);
+  const [showTidy, setShowTidy] = useState(false);
+  const [bulk, setBulk] = useState(null);
+  const [undo, setUndo] = useState(null);
   const fileRef = React.useRef(null);
 
   const load = () => fetch("/api/transactions").then(r=>r.json()).then(setData);
@@ -98,14 +102,18 @@ export default function Page() {
     const byCat = Object.entries(m).map(([id,value]) => ({ id, value, ...catMap[id] })).sort((a,b)=>b.value-a.value);
 
     return { catMap, accMap, monthTxns, out, income, moved, net: income - out, byCat,
-             active, present, people, owedToYou, youOwe, debtTotal };
+             active, present, people, owedToYou, youOwe, debtTotal,
+             compare: compareMonths(txns, catMap, active),
+             recurring: findRecurring(txns, catMap),
+             todo: backlog(txns) };
   }, [data, month]);
 
   if (!data) return <div style={S.boot}><div style={S.bootMark}>₹</div><div style={S.bootLabel}>Opening your passbook</div></div>;
 
   const { txns, categories, accounts, rules } = data;
   const { catMap, accMap, monthTxns, out, income, moved, net, byCat,
-          active, present, people, owedToYou, youOwe, debtTotal } = view;
+          active, present, people, owedToYou, youOwe, debtTotal,
+          compare, recurring, todo } = view;
 
   const saveTxn = async (edited) => {
     setBusy(true);
@@ -128,6 +136,30 @@ export default function Page() {
     setBusy(false);
     if (!r.ok) return flash("Could not delete that entry");
     setSel(null); flash("Deleted"); load();
+  };
+
+  const fileMany = async ({ ids, category_id, remember, merchant, label }) => {
+    setBusy(true);
+    const r = await fetch("/api/bulk", {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ ids, category_id, remember, merchant, label }),
+    });
+    const body = await r.json().catch(() => ({}));
+    setBusy(false);
+    if (!r.ok) { flash(body.error || "Could not file those"); return false; }
+    setUndo({ id: body.undoId, label: label || `Filed ${body.updated} entries` });
+    await load();
+    return true;
+  };
+
+  const undoLast = async () => {
+    const r = await fetch("/api/bulk", {
+      method: "DELETE", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ undoId: undo?.id }),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) { flash(body.error || "Nothing to undo"); setUndo(null); return; }
+    flash(`Put ${body.restored} back`); setUndo(null); load();
   };
 
   // Returns the created category so the caller can select it straight away.
@@ -263,6 +295,11 @@ export default function Page() {
               <div style={S.slabAmt}>{inr(out)}</div>
               <div style={S.slabMeta}>
                 {monthTxns.length} entries
+                {compare.hasPrev && (
+                  <> · <span style={{color: compare.delta > 0 ? "#EF6F63" : "#4BB6A8"}}>
+                    {compare.delta > 0 ? "▲" : "▼"} {inr(Math.abs(compare.delta), true)}
+                  </span> vs {fmtMonth(compare.prev)}</>
+                )}
                 {monthTxns.length === 0 && present.length > 0 &&
                   <> · <button style={S.linkBtn} onClick={()=>setMonth(present[present.length-1])}>
                     jump to {fmtMonth(present[present.length-1])}</button></>}
@@ -288,6 +325,17 @@ export default function Page() {
                 {inr(moved, true)} moved between your own accounts, cards and investments — not counted as spending.
               </div>
             )}
+
+            {todo.length > 0 && (
+              <button style={S.nudge} onClick={()=>setShowTidy(true)}>
+                <span style={{fontSize:20}}>🧹</span>
+                <span style={{flex:1, textAlign:"left"}}>
+                  <b>{todo.reduce((s,x)=>s+x.count,0)} entries</b> aren't sorted yet, worth {inr(todo.reduce((s,x)=>s+x.total,0), true)}.
+                  <br/><span style={S.small}>Sort them by merchant — {todo.length} decisions clears the lot.</span>
+                </span>
+                <span style={{color:"#F2C14E"}}>›</span>
+              </button>
+            )}
             {byCat.length > 0 && (
               <div style={S.card}>
                 <div style={S.cardHead}>Where it went</div>
@@ -299,6 +347,56 @@ export default function Page() {
                     <Tooltip contentStyle={S.tip} formatter={(v,n,p)=>[inr(v), p.payload.name]} />
                   </PieChart>
                 </ResponsiveContainer>
+                {byCat.map(c => {
+                  const budget = Number(c.budget) || 0;
+                  const pct = budget ? Math.min(100, (c.value / budget) * 100) : 0;
+                  const over = budget && c.value > budget;
+                  return (
+                    <div key={c.id} style={{marginTop:10}}>
+                      <div style={S.catLine}>
+                        <span>{c.icon} {c.name}</span>
+                        <span style={{color: over ? "#EF6F63" : "#E8EDF5"}}>
+                          {inr(c.value, true)}{budget ? ` / ${inr(budget, true)}` : ""}
+                        </span>
+                      </div>
+                      {budget > 0 && (
+                        <div style={S.barTrack}>
+                          <div style={{...S.barFill, width:`${pct}%`, background: over ? "#EF6F63" : c.color || "#4BB6A8"}} />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                <button style={S.btnGhost} onClick={()=>setShowCats(true)}>Set budgets</button>
+              </div>
+            )}
+
+            {recurring.length > 0 && (
+              <div style={S.card}>
+                <div style={S.cardHead}>Repeating charges</div>
+                <p style={S.small}>
+                  {inr(recurring.reduce((s,r)=>s+r.amount,0))} a month · {inr(recurring.reduce((s,r)=>s+r.yearly,0))} a year
+                </p>
+                {recurring.slice(0, 8).map(r => (
+                  <button key={r.key} style={S.row} onClick={()=>{ setTab("log"); setSearch(r.merchant); }}>
+                    <span style={{...S.chip, background:(catMap[r.category_id]?.color||"#666")+"22", color:catMap[r.category_id]?.color||"#666"}}>
+                      {catMap[r.category_id]?.icon || "🔁"}
+                    </span>
+                    <div style={{flex:1, minWidth:0, textAlign:"left"}}>
+                      <div style={{fontSize:14, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{r.merchant}</div>
+                      <div style={S.small}>
+                        {r.count}× · last {fmtDay(r.last)}
+                        {r.dormant && <span style={{color:"#F2C14E"}}> · nothing for {r.sinceLast} days</span>}
+                      </div>
+                    </div>
+                    <span style={{whiteSpace:"nowrap"}}>{inr(r.amount, true)}</span>
+                  </button>
+                ))}
+                {recurring.some(r=>r.dormant) && (
+                  <p style={{...S.small, marginTop:10}}>
+                    Charges that have gone quiet are worth checking — either they stopped, or they are about to reappear.
+                  </p>
+                )}
               </div>
             )}
             <div style={S.card}>
@@ -341,13 +439,40 @@ export default function Page() {
                 return [t.merchant, t.note, t.person, t.raw, catMap[t.category_id]?.name, String(t.amount)]
                   .some(v => (v || "").toLowerCase().includes(q));
               });
-              const total = shown.reduce((s,t)=>s+Number(t.amount),0);
+              const stat = summarise(shown);
+              const filtered = q || kindFilter !== "all" || catFilter !== "all";
               return (
                 <>
-                  <div style={S.resultBar}>
-                    <span>{shown.length} {shown.length === 1 ? "entry" : "entries"}</span>
-                    <span>{inr(total, true)}</span>
-                  </div>
+                  {stat && filtered && (
+                    <div style={S.insight}>
+                      <div style={S.insightTop}>
+                        <div>
+                          <div style={S.insightBig}>{inr(stat.total)}</div>
+                          <div style={S.small}>
+                            {stat.count} {stat.count === 1 ? "entry" : "entries"} · {inr(stat.average)} each
+                          </div>
+                        </div>
+                        <div style={{textAlign:"right"}}>
+                          <div style={S.insightBig}>{inr(stat.perMonthAverage)}</div>
+                          <div style={S.small}>a month</div>
+                        </div>
+                      </div>
+                      <div style={S.small}>
+                        {fmtDay(stat.first)} → {fmtDay(stat.last)} · biggest {inr(stat.biggest.amount)} on {fmtDay(stat.biggest.date)}
+                      </div>
+                      {stat.months.length > 1 && <MonthBars months={stat.months} />}
+                      {q && shown.length > 1 && (
+                        <button style={{...S.btnGhost, marginTop:10}} onClick={()=>setBulk(shown)}>
+                          File all {shown.length} together
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {!stat && (
+                    <div style={S.resultBar}>
+                      <span>{shown.length} entries</span><span>{inr(0)}</span>
+                    </div>
+                  )}
                   {!shown.length && <div style={S.empty}>Nothing matches that.</div>}
                   {shown.slice(0, visible).map(t => (
                     <Row key={t.id} t={t} cat={catMap[t.category_id]} acc={accMap[t.account_id]}
@@ -463,6 +588,17 @@ export default function Page() {
               </ol>
               <p style={S.help}>Each message is parsed, categorised, and checked against your ledger, so repeats are skipped rather than double-counted.</p>
             </div>
+
+            <div style={{marginTop:28}}>
+              <div style={S.cardHead}>Your data</div>
+              <p style={S.help}>
+                Download everything as a spreadsheet — every transaction with its category,
+                person and the original bank text. Worth keeping a copy somewhere of your own.
+              </p>
+              <a href="/api/export" style={{...S.btnSecondary, display:"block", textAlign:"center", textDecoration:"none", marginTop:10}}>
+                Export CSV
+              </a>
+            </div>
           </div>
         )}
 
@@ -514,6 +650,32 @@ export default function Page() {
         <CategorySheet categories={categories} txns={txns} busy={busy}
           onClose={()=>setShowCats(false)} onCreate={createCategory}
           onEdit={editCategory} onDelete={deleteCategory} />
+      )}
+      {showTidy && (
+        <TidySheet items={todo} categories={categories} busy={busy}
+          onClose={()=>setShowTidy(false)} onSkip={()=>{}}
+          onFile={(item, category_id, remember) => fileMany({
+            ids: item.ids, category_id, remember, merchant: item.merchant,
+            label: `Filed ${item.count} from ${item.merchant}`,
+          })} />
+      )}
+      {bulk && (
+        <BulkSheet rows={bulk} categories={categories} busy={busy}
+          onClose={()=>setBulk(null)}
+          onFile={async (category_id) => {
+            const ok = await fileMany({
+              ids: bulk.map(t=>t.id), category_id,
+              label: `Filed ${bulk.length} entries`,
+            });
+            if (ok) setBulk(null);
+          }} />
+      )}
+      {undo && (
+        <div style={S.undoBar}>
+          <span style={{flex:1}}>{undo.label}</span>
+          <button style={S.linkBtn} onClick={undoLast}>Undo</button>
+          <button style={{...S.linkBtn, color:"#8494AC"}} onClick={()=>setUndo(null)}>×</button>
+        </div>
       )}
       {toast && <div style={S.toast}>{toast}</div>}
     </div>
@@ -667,6 +829,25 @@ function DetailSheet({ txn, categories, accMap, txns, busy, onClose, onSave, onD
   );
 }
 
+// A month-by-month shape for whatever is being looked at - a single total
+// hides whether something is steady, rising, or a one-off.
+function MonthBars({ months }) {
+  const peak = Math.max(...months.map(m => m.total)) || 1;
+  const show = months.slice(-12);
+  return (
+    <div style={S.bars}>
+      {show.map(m => (
+        <div key={m.month} style={S.barCol} title={`${m.month}: ${inr(m.total)}`}>
+          <div style={S.barSlot}>
+            <div style={{...S.bar, height:`${Math.max(3, (m.total / peak) * 100)}%`}} />
+          </div>
+          <span style={S.barLabel}>{MONTHS[+m.month.split("-")[1] - 1][0]}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 const ICONS = ["🏷️","🍜","🛒","🚗","🏠","💊","🎓","🐾","👶","💇","🎁","🔧","📱","✈️","🏋️","🙏","💼","🎨","☕","🍺"];
 const COLORS = ["#EF6F63","#7FA05A","#5B9BD5","#F2C14E","#D9569E","#9B7FD4","#4BB6A8","#C98A5E"];
 
@@ -711,6 +892,106 @@ function NewCategory({ onCancel, onCreate }) {
         <button style={{...S.btnPrimary, flex:1}} disabled={!name.trim()}
           onClick={()=>onCreate({ name: name.trim(), icon, color, kind })}>Create</button>
         <button style={{...S.btnGhost, flex:1, marginTop:0}} onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+// Works through the merchants clogging Uncategorised, worst first, filing a
+// whole merchant in one decision instead of a row at a time.
+function TidySheet({ items, categories, busy, onClose, onFile, onSkip }) {
+  const [i, setI] = useState(0);
+  const [cat, setCat] = useState("");
+  const [remember, setRemember] = useState(true);
+  const item = items[i];
+
+  if (!item) {
+    return (
+      <div style={S.overlay} onClick={onClose}>
+        <div style={S.sheet} onClick={e=>e.stopPropagation()}>
+          <div style={S.sheetGrab} />
+          <div style={{textAlign:"center", padding:"26px 0"}}>
+            <div style={{fontSize:34}}>✓</div>
+            <div style={{marginTop:10}}>Nothing left to sort.</div>
+          </div>
+          <button style={S.btnPrimary} onClick={onClose}>Done</button>
+        </div>
+      </div>
+    );
+  }
+
+  const remaining = items.length - i;
+  return (
+    <div style={S.overlay} onClick={onClose}>
+      <div style={S.sheet} onClick={e=>e.stopPropagation()}>
+        <div style={S.sheetGrab} />
+        <div style={S.sheetHead}>
+          <span>{remaining} {remaining === 1 ? "merchant" : "merchants"} left</span>
+          <button style={S.linkBtn} onClick={onClose}>Close</button>
+        </div>
+
+        <div style={S.tidyName}>{item.merchant}</div>
+        <div style={S.small}>
+          {item.count} {item.count === 1 ? "entry" : "entries"} · {inr(item.total)} total · last {fmtDay(item.lastDate)}
+        </div>
+        {item.sample && <div style={{...S.rawBox, marginTop:10}}>{item.sample}</div>}
+
+        <select style={{...S.input, marginTop:14}} value={cat} onChange={e=>setCat(e.target.value)}>
+          <option value="">Choose a category…</option>
+          {["expense","income","transfer"].map(group => (
+            <optgroup key={group} label={group === "expense" ? "Spending" : group === "income" ? "Money in" : "Not spending"}>
+              {categories.filter(c=>c.kind===group).map(c => (
+                <option key={c.id} value={c.id}>{c.icon} {c.name}</option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+
+        <label style={{...S.remember, marginTop:10}}>
+          <input type="checkbox" checked={remember} onChange={e=>setRemember(e.target.checked)} />
+          <span>Remember, so future entries from “{item.merchant}” file themselves</span>
+        </label>
+
+        <button style={S.btnPrimary} disabled={!cat || busy}
+          onClick={async () => {
+            const ok = await onFile(item, cat, remember);
+            if (ok) { setCat(""); setI(n => n + 1); }
+          }}>
+          {busy ? "Filing…" : `File all ${item.count}`}
+        </button>
+        <button style={S.btnGhost} onClick={()=>{ setCat(""); onSkip(); setI(n=>n+1); }}>Skip for now</button>
+      </div>
+    </div>
+  );
+}
+
+// Files everything currently matching a search in one go.
+function BulkSheet({ rows, categories, busy, onClose, onFile }) {
+  const [cat, setCat] = useState("");
+  const total = rows.reduce((s,t)=>s+Number(t.amount),0);
+  return (
+    <div style={S.overlay} onClick={onClose}>
+      <div style={S.sheet} onClick={e=>e.stopPropagation()}>
+        <div style={S.sheetGrab} />
+        <div style={S.sheetHead}>
+          <span>File {rows.length} entries</span>
+          <button style={S.linkBtn} onClick={onClose}>Cancel</button>
+        </div>
+        <p style={S.small}>{inr(total)} in total, from {fmtDay(rows[rows.length-1].date)} to {fmtDay(rows[0].date)}.</p>
+        <select style={{...S.input, marginTop:12}} value={cat} onChange={e=>setCat(e.target.value)}>
+          <option value="">Choose a category…</option>
+          {["expense","income","transfer"].map(group => (
+            <optgroup key={group} label={group === "expense" ? "Spending" : group === "income" ? "Money in" : "Not spending"}>
+              {categories.filter(c=>c.kind===group).map(c => (
+                <option key={c.id} value={c.id}>{c.icon} {c.name}</option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+        <p style={{...S.hint, marginBottom:10}}>You can undo this straight after.</p>
+        <button style={S.btnPrimary} disabled={!cat || busy} onClick={()=>onFile(cat)}>
+          {busy ? "Filing…" : `File all ${rows.length}`}
+        </button>
       </div>
     </div>
   );
@@ -782,6 +1063,7 @@ function EditCategory({ cat, busy, onCancel, onSave }) {
   const [icon, setIcon] = useState(cat.icon || "🏷️");
   const [color, setColor] = useState(cat.color || "#6B7A93");
   const [kind, setKind] = useState(cat.kind);
+  const [budget, setBudget] = useState(Number(cat.budget) ? String(Number(cat.budget)) : "");
 
   return (
     <div style={S.maker}>
@@ -800,9 +1082,16 @@ function EditCategory({ cat, busy, onCancel, onSave }) {
           <option value="transfer">Not spending</option>
         </select>
       )}
+      {kind === "expense" && (
+        <>
+          <input style={S.input} inputMode="decimal" placeholder="Monthly budget (optional)"
+            value={budget} onChange={e=>setBudget(e.target.value)} />
+          <span style={S.hint}>Shows a bar on Summary and turns red when the month goes over.</span>
+        </>
+      )}
       <div style={{display:"flex", gap:8, marginTop:8}}>
         <button style={{...S.btnPrimary, flex:1}} disabled={busy || !name.trim()}
-          onClick={()=>onSave({ id: cat.id, name: name.trim(), icon, color, kind })}>Save</button>
+          onClick={()=>onSave({ id: cat.id, name: name.trim(), icon, color, kind, budget: Number(budget) || 0 })}>Save</button>
         <button style={{...S.btnGhost, flex:1, marginTop:0}} onClick={onCancel}>Cancel</button>
       </div>
     </div>
@@ -953,6 +1242,22 @@ const S = {
   pick: { width:34, height:34, borderRadius:9, background:"#0E1420", border:"1px solid #2A3549", fontSize:16, padding:0 },
   pickOn: { borderColor:"#F2C14E", background:"#F2C14E22" },
   swatch: { width:26, height:26, borderRadius:"50%", border:"none", padding:0 },
+  insight: { background:"#171F2E", border:"1px solid #2A3549", borderRadius:12, padding:12, marginBottom:12 },
+  insightTop: { display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:8 },
+  insightBig: { fontSize:20, fontWeight:500 },
+  bars: { display:"flex", alignItems:"flex-end", gap:4, height:52, marginTop:12 },
+  barCol: { flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:3 },
+  barSlot: { width:"100%", height:38, display:"flex", alignItems:"flex-end" },
+  bar: { width:"100%", background:"#F2C14E", borderRadius:2, minHeight:2 },
+  barLabel: { fontSize:9, color:"#8494AC" },
+  nudge: { display:"flex", alignItems:"center", gap:11, width:"100%", background:"#171F2E",
+           border:"1px solid #2A3549", borderRadius:12, padding:13, margin:"14px 16px 0", width:"calc(100% - 32px)",
+           color:"#E8EDF5", fontSize:13, lineHeight:1.5, textAlign:"left" },
+  catLine: { display:"flex", justifyContent:"space-between", fontSize:13, marginBottom:5 },
+  tidyName: { fontSize:19, fontWeight:500, marginBottom:4, wordBreak:"break-word" },
+  undoBar: { position:"fixed", left:12, right:12, bottom:"calc(64px + env(safe-area-inset-bottom))",
+             background:"#212B3D", border:"1px solid #2A3549", borderRadius:11, padding:"10px 8px 10px 14px",
+             display:"flex", alignItems:"center", gap:4, fontSize:12, zIndex:15 },
   barFill: { height:"100%", background:"#4BB6A8" },
   chip: { width:32, height:32, borderRadius:9, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 },
   small: { fontSize:11, color:"#8494AC" }, empty: { padding:"30px 0", textAlign:"center", color:"#8494AC", fontSize:13 },
