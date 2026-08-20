@@ -60,7 +60,7 @@ export default function Page() {
     const rows = parsed.map(p => {
       const account_id = matchAccount(p.last4, p.hint, accounts);
       const acc = accMap[account_id];
-      const s = settle(p.money, Object.fromEntries((data.rates||[]).map(r=>[r.currency,r.rate])) || {}, acc?.markup ?? 3.5) || { amount: 0 };
+      const s = settle(p.money, Object.fromEntries((data.rates||[]).map(r=>[r.currency,Number(r.rate)])), acc?.markup ?? 3.5) || { amount: 0 };
       const txn = { ...p, ...s, account_id, category_id: categorise({ ...p, ...s }, rules.map(r=>({pattern:r.pattern,categoryId:r.category_id})), categories) };
       const status = dupStatus(txn, [...txns, ...seen]);
       seen.push(txn);
@@ -125,9 +125,19 @@ export default function Page() {
             <textarea style={S.textarea} rows={8} value={blob} onChange={e=>setBlob(e.target.value)}
               placeholder="Rs.450.00 debited from a/c XX1234 to VPA swiggy@ybl on 20-08-26..." />
             <button style={S.btnPrimary} onClick={runSMS} disabled={!blob.trim()}>Read messages</button>
-            <div style={{...S.help, marginTop:20}}>
-              For automatic capture, point an iOS Shortcut at:<br/>
-              <code style={S.code}>POST /api/ingest</code> with <code style={S.code}>{"{ secret, text }"}</code>
+            <div style={{marginTop:28}}>
+              <div style={S.cardHead}>Capture bank SMS automatically</div>
+              <ol style={S.steps}>
+                <li>In <b>Shortcuts</b> on iPhone, open the <b>Automation</b> tab and create a new one of type <b>Message</b>.</li>
+                <li>Set it to run when a message <b>contains</b> any of: <i>debited</i>, <i>credited</i>, <i>spent</i>. Turn <b>Ask Before Running</b> off.</li>
+                <li>Add the action <b>Get Contents of URL</b> and point it at:<br/>
+                  <code style={S.code}>https://spendbook-app.vercel.app/api/ingest</code></li>
+                <li>Set <b>Method</b> to <code style={S.code}>POST</code> and <b>Request Body</b> to <code style={S.code}>JSON</code>.</li>
+                <li>Add two text fields to the body:<br/>
+                  <code style={S.code}>secret</code> — the value stored as <code style={S.code}>INGEST_SECRET</code> in your Vercel project<br/>
+                  <code style={S.code}>text</code> — the <b>Shortcut Input</b> variable, which holds the SMS body</li>
+              </ol>
+              <p style={S.help}>Each message is parsed, categorised, and checked against your ledger, so repeats are skipped rather than double-counted.</p>
             </div>
           </div>
         )}
@@ -190,6 +200,7 @@ const S = {
   chip: { width:32, height:32, borderRadius:9, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 },
   small: { fontSize:11, color:"#8494AC" }, empty: { padding:"30px 0", textAlign:"center", color:"#8494AC", fontSize:13 },
   help: { fontSize:13, color:"#8494AC", lineHeight:1.6 },
+  steps: { fontSize:13, color:"#8494AC", lineHeight:1.7, paddingLeft:18, margin:"0 0 12px" },
   textarea: { width:"100%", background:"#171F2E", border:"1px solid #2A3549", borderRadius:11, color:"#E8EDF5", padding:12, fontSize:12, margin:"10px 0", fontFamily:"monospace" },
   btnPrimary: { width:"100%", background:"#F2C14E", color:"#141A12", border:"none", borderRadius:12, padding:14, fontWeight:600, fontSize:15 },
   code: { background:"#171F2E", padding:"2px 6px", borderRadius:5, fontSize:11 },

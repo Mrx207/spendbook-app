@@ -5,11 +5,12 @@ export const runtime = "nodejs";
 
 export async function GET() {
   await ensureSchema();
-  const [{ rows: txns }, { rows: categories }, { rows: accounts }, { rows: rules }] = await Promise.all([
+  const [{ rows: txns }, { rows: categories }, { rows: accounts }, { rows: rules }, { rows: rates }] = await Promise.all([
     sql`SELECT * FROM transactions ORDER BY date DESC, time DESC NULLS LAST, created_at DESC LIMIT 2000`,
     sql`SELECT * FROM categories`, sql`SELECT * FROM accounts`, sql`SELECT * FROM rules`,
+    sql`SELECT * FROM rates`,
   ]);
-  return Response.json({ txns, categories, accounts, rules });
+  return Response.json({ txns, categories, accounts, rules, rates });
 }
 
 // Manual add from the dashboard
