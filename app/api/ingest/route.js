@@ -1,5 +1,4 @@
-import { sql } from "@vercel/postgres";
-import { ensureSchema } from "@/lib/db";
+import { ensureSchema, sql } from "@/lib/db";
 import { parseSMS, splitMessages, categorise, matchAccount, dupStatus, settle } from "@/lib/parser";
 
 export const runtime = "nodejs";

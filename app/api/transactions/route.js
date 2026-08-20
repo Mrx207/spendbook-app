@@ -1,5 +1,4 @@
-import { sql } from "@vercel/postgres";
-import { ensureSchema } from "@/lib/db";
+import { ensureSchema, sql } from "@/lib/db";
 import { uid, categorise } from "@/lib/parser";
 
 export const runtime = "nodejs";
