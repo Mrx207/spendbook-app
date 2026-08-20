@@ -1,0 +1,8 @@
+{
+  "name": "Spendbook",
+  "short_name": "Spendbook",
+  "display": "standalone",
+  "background_color": "#0E1420",
+  "theme_color": "#0E1420",
+  "start_url": "/"
+}
