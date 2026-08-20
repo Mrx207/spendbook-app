@@ -13,8 +13,17 @@ const cell = (v) => {
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 
+// The driver hands DATE columns back as Date objects, whose default string
+// form is a locale stamp ("Thu Aug 20"), not something a spreadsheet can sort.
+const isoDate = (v) => {
+  if (v instanceof Date) {
+    return `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, "0")}-${String(v.getDate()).padStart(2, "0")}`;
+  }
+  return String(v ?? "").slice(0, 10);
+};
+
 const COLUMNS = [
-  ["date", t => String(t.date).slice(0, 10)],
+  ["date", t => isoDate(t.date)],
   ["type", t => t.type],
   ["kind", t => t.kind],
   ["amount", t => t.amount],
