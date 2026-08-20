@@ -45,6 +45,7 @@ export default function Page() {
   const [catFilter, setCatFilter] = useState("all");
   const [visible, setVisible] = useState(200);
   const [openPerson, setOpenPerson] = useState(null);
+  const [showCats, setShowCats] = useState(false);
   const fileRef = React.useRef(null);
 
   const load = () => fetch("/api/transactions").then(r=>r.json()).then(setData);
@@ -127,6 +128,37 @@ export default function Page() {
     setBusy(false);
     if (!r.ok) return flash("Could not delete that entry");
     setSel(null); flash("Deleted"); load();
+  };
+
+  // Returns the created category so the caller can select it straight away.
+  const createCategory = async (payload) => {
+    const r = await fetch("/api/categories", {
+      method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(payload),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) { flash(body.error || "Could not create that"); return null; }
+    flash(`“${body.name}” added`);
+    await load();
+    return body;
+  };
+
+  const editCategory = async (payload) => {
+    const r = await fetch("/api/categories", {
+      method: "PATCH", headers: {"Content-Type":"application/json"}, body: JSON.stringify(payload),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) { flash(body.error || "Could not save that"); return false; }
+    flash("Saved"); await load(); return true;
+  };
+
+  const deleteCategory = async (id) => {
+    const r = await fetch("/api/categories", {
+      method: "DELETE", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ id }),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) return flash(body.error || "Could not delete that");
+    flash(body.moved ? `Deleted · ${body.moved} moved to Uncategorised` : "Deleted");
+    load();
   };
 
   // Cash lending never reaches a bank feed, so it has to be recordable by hand.
@@ -270,7 +302,10 @@ export default function Page() {
               </div>
             )}
             <div style={S.card}>
-              <div style={S.cardHead}>Latest</div>
+              <div style={{...S.cardHead, display:"flex", justifyContent:"space-between", alignItems:"center"}}>
+                <span>Latest</span>
+                <button style={S.linkBtn} onClick={()=>setShowCats(true)}>Categories</button>
+              </div>
               {monthTxns.slice(0,8).map(t => <Row key={t.id} t={t} cat={catMap[t.category_id]} acc={accMap[t.account_id]} kind={kindOf(t, catMap)} onOpen={()=>setSel(t)} />)}
               {monthTxns.length === 0 && <div style={S.empty}>Nothing logged yet. Import bank messages to start.</div>}
             </div>
@@ -472,7 +507,13 @@ export default function Page() {
       </nav>
       {sel && (
         <DetailSheet txn={sel} categories={categories} accMap={accMap} txns={txns} busy={busy}
-          onClose={()=>setSel(null)} onSave={saveTxn} onDelete={deleteTxn} />
+          onClose={()=>setSel(null)} onSave={saveTxn} onDelete={deleteTxn}
+          onCreateCategory={createCategory} />
+      )}
+      {showCats && (
+        <CategorySheet categories={categories} txns={txns} busy={busy}
+          onClose={()=>setShowCats(false)} onCreate={createCategory}
+          onEdit={editCategory} onDelete={deleteCategory} />
       )}
       {toast && <div style={S.toast}>{toast}</div>}
     </div>
@@ -496,7 +537,8 @@ function Row({ t, cat, acc, kind, onOpen }) {
 }
 
 // Tap a row to see what the bank actually said and correct how it was filed.
-function DetailSheet({ txn, categories, accMap, txns, busy, onClose, onSave, onDelete }) {
+function DetailSheet({ txn, categories, accMap, txns, busy, onClose, onSave, onDelete, onCreateCategory }) {
+  const [making, setMaking] = useState(false);
   const [form, setForm] = useState({
     id: txn.id, amount: String(txn.amount), type: txn.type,
     merchant: txn.merchant || "", note: txn.note || "",
@@ -546,7 +588,8 @@ function DetailSheet({ txn, categories, accMap, txns, busy, onClose, onSave, onD
 
         <label style={S.field}>
           <span style={S.fieldLabel}>Category</span>
-          <select style={S.input} value={form.category_id} onChange={e=>set("category_id", e.target.value)}>
+          <select style={S.input} value={form.category_id}
+            onChange={e => e.target.value === "__new__" ? setMaking(true) : set("category_id", e.target.value)}>
             {["expense","income","transfer"].map(group => (
               <optgroup key={group} label={group === "expense" ? "Spending" : group === "income" ? "Money in" : "Not spending"}>
                 {categories.filter(c=>c.kind===group).map(c => (
@@ -554,6 +597,7 @@ function DetailSheet({ txn, categories, accMap, txns, busy, onClose, onSave, onD
                 ))}
               </optgroup>
             ))}
+            <option value="__new__">+ New category…</option>
           </select>
           <span style={S.hint}>
             {cat?.kind === "transfer" && "Won't count as spending — money you still own."}
@@ -561,6 +605,16 @@ function DetailSheet({ txn, categories, accMap, txns, busy, onClose, onSave, onD
             {cat?.kind === "expense" && "Counts as spending."}
           </span>
         </label>
+
+        {making && (
+          <NewCategory
+            onCancel={()=>setMaking(false)}
+            onCreate={async (payload) => {
+              const created = await onCreateCategory(payload);
+              if (created) { set("category_id", created.id); setMaking(false); }
+            }}
+          />
+        )}
 
         {form.category_id === "people" && (
           <label style={S.field}>
@@ -608,6 +662,148 @@ function DetailSheet({ txn, categories, accMap, txns, busy, onClose, onSave, onD
         ) : (
           <button style={S.btnGhost} onClick={()=>setConfirmDelete(true)}>Delete</button>
         )}
+      </div>
+    </div>
+  );
+}
+
+const ICONS = ["🏷️","🍜","🛒","🚗","🏠","💊","🎓","🐾","👶","💇","🎁","🔧","📱","✈️","🏋️","🙏","💼","🎨","☕","🍺"];
+const COLORS = ["#EF6F63","#7FA05A","#5B9BD5","#F2C14E","#D9569E","#9B7FD4","#4BB6A8","#C98A5E"];
+
+// Choosing the type is the only decision here that changes any number, so it
+// is asked in terms of what happens to the money, not in accounting words.
+function NewCategory({ onCancel, onCreate }) {
+  const [name, setName] = useState("");
+  const [icon, setIcon] = useState("🏷️");
+  const [color, setColor] = useState("#6B7A93");
+  const [kind, setKind] = useState("expense");
+
+  return (
+    <div style={S.maker}>
+      <span style={S.fieldLabel}>New category</span>
+      <input style={{...S.input, marginBottom:8}} autoFocus placeholder="Name" value={name} onChange={e=>setName(e.target.value)} />
+
+      <div style={S.pickRow}>
+        {ICONS.map(i => (
+          <button key={i} onClick={()=>setIcon(i)}
+            style={{...S.pick, ...(icon===i ? S.pickOn : null)}}>{i}</button>
+        ))}
+      </div>
+      <div style={S.pickRow}>
+        {COLORS.map(c => (
+          <button key={c} onClick={()=>setColor(c)} aria-label={c}
+            style={{...S.swatch, background:c, outline: color===c ? "2px solid #E8EDF5" : "none"}} />
+        ))}
+      </div>
+
+      <select style={{...S.input, marginBottom:6}} value={kind} onChange={e=>setKind(e.target.value)}>
+        <option value="expense">Spending — money is gone</option>
+        <option value="income">Money in — new money arrived</option>
+        <option value="transfer">Not spending — money you still own</option>
+      </select>
+      <span style={S.hint}>
+        {kind === "expense" && "Counts towards what you spent."}
+        {kind === "income" && "Counts towards money in."}
+        {kind === "transfer" && "Kept out of both totals — for moving money around, lending, or saving."}
+      </span>
+
+      <div style={{display:"flex", gap:8, marginTop:10}}>
+        <button style={{...S.btnPrimary, flex:1}} disabled={!name.trim()}
+          onClick={()=>onCreate({ name: name.trim(), icon, color, kind })}>Create</button>
+        <button style={{...S.btnGhost, flex:1, marginTop:0}} onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+// Rename, recolour, or remove what already exists.
+function CategorySheet({ categories, txns, busy, onClose, onCreate, onEdit, onDelete }) {
+  const [making, setMaking] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [confirm, setConfirm] = useState(null);
+
+  const counts = useMemo(() => {
+    const m = {};
+    txns.forEach(t => { m[t.category_id] = (m[t.category_id] || 0) + 1; });
+    return m;
+  }, [txns]);
+
+  return (
+    <div style={S.overlay} onClick={onClose}>
+      <div style={S.sheet} onClick={e=>e.stopPropagation()}>
+        <div style={S.sheetGrab} />
+        <div style={S.sheetHead}><span>Categories</span><button style={S.linkBtn} onClick={onClose}>Done</button></div>
+
+        {making
+          ? <NewCategory onCancel={()=>setMaking(false)} onCreate={async p => { if (await onCreate(p)) setMaking(false); }} />
+          : <button style={{...S.btnGhost, marginTop:0, marginBottom:12}} onClick={()=>setMaking(true)}>+ New category</button>}
+
+        {["expense","income","transfer"].map(group => (
+          <div key={group}>
+            <div style={{...S.cardHead, marginTop:14}}>
+              {group === "expense" ? "Spending" : group === "income" ? "Money in" : "Not spending"}
+            </div>
+            {categories.filter(c=>c.kind===group).map(c => (
+              <div key={c.id}>
+                {editing === c.id ? (
+                  <EditCategory cat={c} busy={busy} onCancel={()=>setEditing(null)}
+                    onSave={async p => { if (await onEdit(p)) setEditing(null); }} />
+                ) : (
+                  <div style={S.row}>
+                    <span style={{...S.chip, background:(c.color||"#666")+"22", color:c.color||"#666"}}>{c.icon}</span>
+                    <div style={{flex:1, minWidth:0, textAlign:"left"}}>
+                      <div style={{fontSize:14}}>{c.name}</div>
+                      <div style={S.small}>
+                        {counts[c.id] || 0} {counts[c.id] === 1 ? "entry" : "entries"}
+                        {!c.custom && " · built in"}
+                      </div>
+                    </div>
+                    <button style={S.linkBtn} onClick={()=>setEditing(c.id)}>Edit</button>
+                    {c.custom && (confirm === c.id
+                      ? <button style={{...S.linkBtn, color:"#EF6F63"}} onClick={()=>{ onDelete(c.id); setConfirm(null); }}>Sure?</button>
+                      : <button style={{...S.linkBtn, color:"#8494AC"}} onClick={()=>setConfirm(c.id)}>Delete</button>)}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        ))}
+        <p style={{...S.help, marginTop:16}}>
+          Deleting a category moves its entries to Uncategorised — nothing is lost.
+          Built-in categories can be renamed but keep their type, since the totals depend on it.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function EditCategory({ cat, busy, onCancel, onSave }) {
+  const [name, setName] = useState(cat.name);
+  const [icon, setIcon] = useState(cat.icon || "🏷️");
+  const [color, setColor] = useState(cat.color || "#6B7A93");
+  const [kind, setKind] = useState(cat.kind);
+
+  return (
+    <div style={S.maker}>
+      <input style={{...S.input, marginBottom:8}} value={name} onChange={e=>setName(e.target.value)} />
+      <div style={S.pickRow}>
+        {ICONS.map(i => <button key={i} onClick={()=>setIcon(i)} style={{...S.pick, ...(icon===i ? S.pickOn : null)}}>{i}</button>)}
+      </div>
+      <div style={S.pickRow}>
+        {COLORS.map(c => <button key={c} onClick={()=>setColor(c)} aria-label={c}
+          style={{...S.swatch, background:c, outline: color===c ? "2px solid #E8EDF5" : "none"}} />)}
+      </div>
+      {cat.custom && (
+        <select style={{...S.input, marginBottom:6}} value={kind} onChange={e=>setKind(e.target.value)}>
+          <option value="expense">Spending</option>
+          <option value="income">Money in</option>
+          <option value="transfer">Not spending</option>
+        </select>
+      )}
+      <div style={{display:"flex", gap:8, marginTop:8}}>
+        <button style={{...S.btnPrimary, flex:1}} disabled={busy || !name.trim()}
+          onClick={()=>onSave({ id: cat.id, name: name.trim(), icon, color, kind })}>Save</button>
+        <button style={{...S.btnGhost, flex:1, marginTop:0}} onClick={onCancel}>Cancel</button>
       </div>
     </div>
   );
@@ -752,6 +948,11 @@ const S = {
   resultBar: { display:"flex", justifyContent:"space-between", fontSize:11, color:"#8494AC",
                padding:"0 0 8px", borderBottom:"1px solid #2A354980", marginBottom:4 },
   personBody: { paddingLeft:12, borderLeft:"2px solid #C98A5E44", marginLeft:14, marginBottom:10 },
+  maker: { background:"#171F2E", border:"1px solid #2A3549", borderRadius:12, padding:12, marginBottom:12 },
+  pickRow: { display:"flex", flexWrap:"wrap", gap:6, marginBottom:8 },
+  pick: { width:34, height:34, borderRadius:9, background:"#0E1420", border:"1px solid #2A3549", fontSize:16, padding:0 },
+  pickOn: { borderColor:"#F2C14E", background:"#F2C14E22" },
+  swatch: { width:26, height:26, borderRadius:"50%", border:"none", padding:0 },
   barFill: { height:"100%", background:"#4BB6A8" },
   chip: { width:32, height:32, borderRadius:9, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 },
   small: { fontSize:11, color:"#8494AC" }, empty: { padding:"30px 0", textAlign:"center", color:"#8494AC", fontSize:13 },
