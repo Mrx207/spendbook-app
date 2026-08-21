@@ -2,6 +2,36 @@ import { ensureSchema, sql } from "@/lib/db";
 import { parseSMS, splitMessages, categorise, matchAccount, dupStatus, settle } from "@/lib/parser";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+// Dry run, for checking the secret and seeing how a message is read without
+// writing anything. Deliberately read-only: it is reachable from a browser,
+// where a link that changed data could be followed by accident.
+export async function GET(req) {
+  const url = new URL(req.url);
+  const secret = url.searchParams.get("secret");
+  const text = url.searchParams.get("text");
+
+  if (secret !== process.env.INGEST_SECRET) {
+    return Response.json({ ok: false, reason: "The secret does not match" }, { status: 401 });
+  }
+  if (!text) {
+    return Response.json({ ok: true, secret: "correct", hint: "Add &text=... to see how a message is read" });
+  }
+
+  const parts = splitMessages(text);
+  const parsed = parts.map(parseSMS).filter(Boolean);
+  return Response.json({
+    ok: true,
+    secret: "correct",
+    wouldAdd: parsed.length,
+    reading: parsed.map(p => ({
+      type: p.type, amount: p.money?.[0]?.val ?? null,
+      date: p.date, merchant: p.merchant, reference: p.ref,
+    })),
+    note: "Nothing was saved. This only reports what a real send would do.",
+  });
+}
 
 // Shortcuts posts: { secret: "...", text: "raw SMS body" }
 export async function POST(req) {
