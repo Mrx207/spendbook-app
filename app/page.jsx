@@ -704,34 +704,31 @@ export default function Page() {
           }} />
       )}
       {showDupes && dupes && (
-        <div style={S.overlay} onClick={()=>setShowDupes(false)}>
-          <div style={S.sheet} onClick={e=>e.stopPropagation()}>
-            <div style={S.sheetGrab} />
-            <div style={S.sheetHead}>
-              <span>Duplicate entries</span>
-              <button style={S.linkBtn} onClick={()=>setShowDupes(false)}>Close</button>
-            </div>
-            <p style={S.help}>
-              {dupes.extra} entries appear more than once, worth {inr(dupes.value)} in total —
-              almost always the same statement imported twice. The earliest copy of each is kept.
-            </p>
-            <div style={{...S.cardHead, marginTop:16}}>Largest</div>
-            {dupes.sample.map((s,i) => (
-              <div key={i} style={S.row}>
-                <span style={{...S.chip, background:"#EF6F6322", color:"#EF6F63"}}>⧉</span>
-                <div style={{flex:1, minWidth:0, textAlign:"left"}}>
-                  <div style={{fontSize:14, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{s.merchant}</div>
-                  <div style={S.small}>{fmtDay(s.date)} · {s.copies} copies</div>
-                </div>
-                <span style={{whiteSpace:"nowrap"}}>{inr(s.amount, true)}</span>
+        <Sheet title="Duplicate entries" onClose={()=>setShowDupes(false)}
+          footer={
+            <>
+              <button style={S.btnPrimary} disabled={busy} onClick={removeDupes}>
+                {busy ? "Cleaning…" : `Remove ${dupes.extra} duplicates`}
+              </button>
+              <p style={{...S.hint, textAlign:"center", marginTop:6}}>You can undo this straight after.</p>
+            </>
+          }>
+          <p style={S.help}>
+            {dupes.extra} entries appear more than once, worth {inr(dupes.value)} in total —
+            almost always the same statement imported twice. The earliest copy of each is kept.
+          </p>
+          <div style={{...S.cardHead, marginTop:16}}>Largest</div>
+          {dupes.sample.map((s,i) => (
+            <div key={i} style={S.row}>
+              <span style={{...S.chip, background:"#EF6F6322", color:"#EF6F63"}}>⧉</span>
+              <div style={{flex:1, minWidth:0, textAlign:"left"}}>
+                <div style={{fontSize:14, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{s.merchant}</div>
+                <div style={S.small}>{fmtDay(s.date)} · {s.copies} copies</div>
               </div>
-            ))}
-            <button style={{...S.btnPrimary, marginTop:14}} disabled={busy} onClick={removeDupes}>
-              {busy ? "Cleaning…" : `Remove ${dupes.extra} duplicates`}
-            </button>
-            <p style={{...S.hint, textAlign:"center"}}>You can undo this straight after.</p>
-          </div>
-        </div>
+              <span style={{whiteSpace:"nowrap"}}>{inr(s.amount, true)}</span>
+            </div>
+          ))}
+        </Sheet>
       )}
       {undo && (
         <div style={S.undoBar}>
@@ -784,14 +781,29 @@ function DetailSheet({ txn, categories, accMap, txns, busy, onClose, onSave, onD
   const cat = categories.find(c => c.id === form.category_id);
 
   return (
-    <div style={S.overlay} onClick={onClose}>
-      <div style={S.sheet} onClick={e=>e.stopPropagation()}>
-        <div style={S.sheetGrab} />
-        <div style={S.sheetHead}>
-          <span>{fmtDay(txn.date)}{txn.time ? ` · ${txn.time}` : ""}</span>
-          <span style={S.small}>{accMap[txn.account_id]?.name || txn.source || ""}</span>
-        </div>
-
+    <Sheet
+      title={`${fmtDay(txn.date)}${txn.time ? ` · ${txn.time}` : ""} · ${accMap[txn.account_id]?.name || txn.source || ""}`}
+      onClose={onClose}
+      footer={
+        <>
+          <button style={S.btnPrimary} disabled={busy}
+            onClick={()=>onSave({ ...form, amount: Number(form.amount), applyToSimilar: applyAll })}>
+            {busy ? "Saving…" : "Save"}
+          </button>
+          {confirmDelete ? (
+            <div style={S.confirmRow}>
+              <span style={S.small}>Delete this entry?</span>
+              <span>
+                <button style={S.linkBtn} onClick={()=>setConfirmDelete(false)}>Keep</button>
+                <button style={{...S.linkBtn, color:"#EF6F63"}} onClick={()=>onDelete(txn.id)}>Delete</button>
+              </span>
+            </div>
+          ) : (
+            <button style={S.btnGhost} onClick={()=>setConfirmDelete(true)}>Delete</button>
+          )}
+        </>
+      }>
+      <div>
         <label style={S.field}>
           <span style={S.fieldLabel}>Who / what</span>
           <input style={S.input} value={form.merchant} onChange={e=>set("merchant", e.target.value)} />
@@ -872,21 +884,30 @@ function DetailSheet({ txn, categories, accMap, txns, busy, onClose, onSave, onD
           </label>
         )}
 
-        <button style={{...S.btnPrimary, marginTop:6}} disabled={busy}
-          onClick={()=>onSave({ ...form, amount: Number(form.amount), applyToSimilar: applyAll })}>
-          {busy ? "Saving…" : "Save"}
-        </button>
-        {confirmDelete ? (
-          <div style={S.confirmRow}>
-            <span style={S.small}>Delete this entry?</span>
-            <span>
-              <button style={S.linkBtn} onClick={()=>setConfirmDelete(false)}>Keep</button>
-              <button style={{...S.linkBtn, color:"#EF6F63"}} onClick={()=>onDelete(txn.id)}>Delete</button>
-            </span>
+      </div>
+    </Sheet>
+  );
+}
+
+// One sheet shell for every panel. The header and the action stay put while
+// only the middle scrolls - previously the whole sheet was one scrolling box,
+// so a long list carried the close button off the top of the screen and the
+// button at the bottom out of reach. Heights are measured against the overlay,
+// which is pinned to the viewport, rather than in vh units that iOS reports
+// larger than the area actually visible.
+function Sheet({ title, onClose, closeLabel = "Close", footer, children }) {
+  return (
+    <div style={S.overlay} onClick={onClose}>
+      <div style={S.sheet} onClick={e => e.stopPropagation()}>
+        <div style={S.sheetTop}>
+          <div style={S.sheetGrab} />
+          <div style={S.sheetHead}>
+            <span>{title}</span>
+            <button style={S.linkBtn} onClick={onClose}>{closeLabel}</button>
           </div>
-        ) : (
-          <button style={S.btnGhost} onClick={()=>setConfirmDelete(true)}>Delete</button>
-        )}
+        </div>
+        <div style={S.sheetBody}>{children}</div>
+        {footer && <div style={S.sheetFoot}>{footer}</div>}
       </div>
     </div>
   );
@@ -970,29 +991,34 @@ function TidySheet({ items, categories, busy, onClose, onFile, onSkip }) {
 
   if (!item) {
     return (
-      <div style={S.overlay} onClick={onClose}>
-        <div style={S.sheet} onClick={e=>e.stopPropagation()}>
-          <div style={S.sheetGrab} />
-          <div style={{textAlign:"center", padding:"26px 0"}}>
-            <div style={{fontSize:34}}>✓</div>
-            <div style={{marginTop:10}}>Nothing left to sort.</div>
-          </div>
-          <button style={S.btnPrimary} onClick={onClose}>Done</button>
+      <Sheet title="All sorted" onClose={onClose} closeLabel="Done"
+        footer={<button style={S.btnPrimary} onClick={onClose}>Done</button>}>
+        <div style={{textAlign:"center", padding:"26px 0"}}>
+          <div style={{fontSize:34}}>✓</div>
+          <div style={{marginTop:10}}>Nothing left to sort.</div>
         </div>
-      </div>
+      </Sheet>
     );
   }
 
   const remaining = items.length - i;
   return (
-    <div style={S.overlay} onClick={onClose}>
-      <div style={S.sheet} onClick={e=>e.stopPropagation()}>
-        <div style={S.sheetGrab} />
-        <div style={S.sheetHead}>
-          <span>{remaining} {remaining === 1 ? "merchant" : "merchants"} left</span>
-          <button style={S.linkBtn} onClick={onClose}>Close</button>
-        </div>
-
+    <Sheet
+      title={`${remaining} ${remaining === 1 ? "merchant" : "merchants"} left`}
+      onClose={onClose}
+      footer={
+        <>
+          <button style={S.btnPrimary} disabled={!cat || busy}
+            onClick={async () => {
+              const ok = await onFile(item, cat, remember);
+              if (ok) { setCat(""); setI(n => n + 1); }
+            }}>
+            {busy ? "Filing…" : `File all ${item.count}`}
+          </button>
+          <button style={S.btnGhost} onClick={()=>{ setCat(""); onSkip(); setI(n=>n+1); }}>Skip for now</button>
+        </>
+      }>
+      <div>
         <div style={S.tidyName}>{item.merchant}</div>
         <div style={S.small}>
           {item.count} {item.count === 1 ? "entry" : "entries"} · {inr(item.total)} total · last {fmtDay(item.lastDate)}
@@ -1014,17 +1040,8 @@ function TidySheet({ items, categories, busy, onClose, onFile, onSkip }) {
           <input type="checkbox" checked={remember} onChange={e=>setRemember(e.target.checked)} />
           <span>Remember, so future entries from “{item.merchant}” file themselves</span>
         </label>
-
-        <button style={S.btnPrimary} disabled={!cat || busy}
-          onClick={async () => {
-            const ok = await onFile(item, cat, remember);
-            if (ok) { setCat(""); setI(n => n + 1); }
-          }}>
-          {busy ? "Filing…" : `File all ${item.count}`}
-        </button>
-        <button style={S.btnGhost} onClick={()=>{ setCat(""); onSkip(); setI(n=>n+1); }}>Skip for now</button>
       </div>
-    </div>
+    </Sheet>
   );
 }
 
@@ -1033,30 +1050,25 @@ function BulkSheet({ rows, categories, busy, onClose, onFile }) {
   const [cat, setCat] = useState("");
   const total = rows.reduce((s,t)=>s+Number(t.amount),0);
   return (
-    <div style={S.overlay} onClick={onClose}>
-      <div style={S.sheet} onClick={e=>e.stopPropagation()}>
-        <div style={S.sheetGrab} />
-        <div style={S.sheetHead}>
-          <span>File {rows.length} entries</span>
-          <button style={S.linkBtn} onClick={onClose}>Cancel</button>
-        </div>
-        <p style={S.small}>{inr(total)} in total, from {fmtDay(rows[rows.length-1].date)} to {fmtDay(rows[0].date)}.</p>
-        <select style={{...S.input, marginTop:12}} value={cat} onChange={e=>setCat(e.target.value)}>
-          <option value="">Choose a category…</option>
-          {["expense","income","transfer"].map(group => (
-            <optgroup key={group} label={group === "expense" ? "Spending" : group === "income" ? "Money in" : "Not spending"}>
-              {categories.filter(c=>c.kind===group).map(c => (
-                <option key={c.id} value={c.id}>{c.icon} {c.name}</option>
-              ))}
-            </optgroup>
-          ))}
-        </select>
-        <p style={{...S.hint, marginBottom:10}}>You can undo this straight after.</p>
+    <Sheet title={`File ${rows.length} entries`} onClose={onClose} closeLabel="Cancel"
+      footer={
         <button style={S.btnPrimary} disabled={!cat || busy} onClick={()=>onFile(cat)}>
           {busy ? "Filing…" : `File all ${rows.length}`}
         </button>
-      </div>
-    </div>
+      }>
+      <p style={S.small}>{inr(total)} in total, from {fmtDay(rows[rows.length-1].date)} to {fmtDay(rows[0].date)}.</p>
+      <select style={{...S.input, marginTop:12}} value={cat} onChange={e=>setCat(e.target.value)}>
+        <option value="">Choose a category…</option>
+        {["expense","income","transfer"].map(group => (
+          <optgroup key={group} label={group === "expense" ? "Spending" : group === "income" ? "Money in" : "Not spending"}>
+            {categories.filter(c=>c.kind===group).map(c => (
+              <option key={c.id} value={c.id}>{c.icon} {c.name}</option>
+            ))}
+          </optgroup>
+        ))}
+      </select>
+      <p style={S.hint}>You can undo this straight after.</p>
+    </Sheet>
   );
 }
 
@@ -1073,11 +1085,8 @@ function CategorySheet({ categories, txns, busy, onClose, onCreate, onEdit, onDe
   }, [txns]);
 
   return (
-    <div style={S.overlay} onClick={onClose}>
-      <div style={S.sheet} onClick={e=>e.stopPropagation()}>
-        <div style={S.sheetGrab} />
-        <div style={S.sheetHead}><span>Categories</span><button style={S.linkBtn} onClick={onClose}>Done</button></div>
-
+    <Sheet title="Categories" onClose={onClose} closeLabel="Done">
+      <div>
         {making
           ? <NewCategory onCancel={()=>setMaking(false)} onCreate={async p => { if (await onCreate(p)) setMaking(false); }} />
           : <button style={{...S.btnGhost, marginTop:0, marginBottom:12}} onClick={()=>setMaking(true)}>+ New category</button>}
@@ -1117,7 +1126,7 @@ function CategorySheet({ categories, txns, busy, onClose, onCreate, onEdit, onDe
           Built-in categories can be renamed but keep their type, since the totals depend on it.
         </p>
       </div>
-    </div>
+    </Sheet>
   );
 }
 
@@ -1278,11 +1287,19 @@ const S = {
   monthBar: { display:"flex", alignItems:"center", justifyContent:"space-between", padding:"10px 16px 0" },
   monthNav: { background:"none", border:"none", color:"#F2C14E", fontSize:26, lineHeight:1, padding:"0 12px" },
   monthName: { fontSize:13, color:"#8494AC", textTransform:"uppercase", letterSpacing:1 },
-  overlay: { position:"fixed", inset:0, background:"#00000088", display:"flex", alignItems:"flex-end", zIndex:20 },
-  sheet: { width:"100%", maxHeight:"88vh", overflowY:"auto", background:"#141B29", borderTopLeftRadius:18, borderTopRightRadius:18,
-           padding:"10px 16px calc(20px + env(safe-area-inset-bottom))", border:"1px solid #2A3549" },
-  sheetGrab: { width:38, height:4, borderRadius:2, background:"#2A3549", margin:"2px auto 14px" },
-  sheetHead: { display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:12, color:"#8494AC", marginBottom:14 },
+  // Pinned to the viewport and clipped, so the sheet inside can never grow
+  // past what is actually on screen. Top inset keeps it clear of the notch.
+  overlay: { position:"fixed", inset:0, background:"#00000088", display:"flex", alignItems:"flex-end",
+             zIndex:20, overflow:"hidden", paddingTop:"calc(24px + env(safe-area-inset-top))" },
+  sheet: { width:"100%", maxHeight:"100%", display:"flex", flexDirection:"column", minHeight:0,
+           background:"#141B29", borderTopLeftRadius:18, borderTopRightRadius:18,
+           border:"1px solid #2A3549", overflow:"hidden" },
+  sheetTop: { flexShrink:0, padding:"8px 16px 0", borderBottom:"1px solid #2A3549" },
+  sheetBody: { flex:1, minHeight:0, overflowY:"auto", WebkitOverflowScrolling:"touch", padding:"14px 16px" },
+  sheetFoot: { flexShrink:0, padding:"10px 16px calc(12px + env(safe-area-inset-bottom))",
+               borderTop:"1px solid #2A3549", background:"#141B29" },
+  sheetGrab: { width:38, height:4, borderRadius:2, background:"#2A3549", margin:"2px auto 10px" },
+  sheetHead: { display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:12, color:"#8494AC", marginBottom:10 },
   field: { display:"block", marginBottom:12 },
   fieldLabel: { display:"block", fontSize:10, color:"#8494AC", textTransform:"uppercase", letterSpacing:0.4, marginBottom:5 },
   input: { width:"100%", background:"#171F2E", border:"1px solid #2A3549", borderRadius:10, color:"#E8EDF5", padding:11, fontSize:15, boxSizing:"border-box" },
