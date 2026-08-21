@@ -79,5 +79,48 @@ check("worst by value first", b[0].merchant, "One Mobi");
 check("groups ids", b.find(x=>x.merchant==="Priyanka").ids.length, 2);
 check("keeps a sample of bank text", b[0].sample, "UPI/DR/1/ONE MOBI");
 
+
+// --- periods -------------------------------------------------------------
+import { periodRange, shiftPeriod, periodBuckets, comparePeriods, startOfWeek } from "../lib/insights.js";
+
+// Weeks run Monday to Sunday.
+check("monday stays", startOfWeek("2026-08-17"), "2026-08-17");
+check("sunday pulls back six", startOfWeek("2026-08-23"), "2026-08-17");
+check("saturday pulls back", startOfWeek("2026-08-22"), "2026-08-17");
+
+const wk = periodRange("week", "2026-08-21");
+check("week bounds", [wk.start, wk.end], ["2026-08-17", "2026-08-23"]);
+check("week label", wk.label, "17\u201323 Aug 2026");
+
+// A week spanning a month boundary names both months.
+check("week across months", periodRange("week", "2026-09-01").label, "31 Aug \u2013 6 Sep 2026");
+
+const mo = periodRange("month", "2026-02-14");
+check("february ends on the 28th in 2026", [mo.start, mo.end], ["2026-02-01", "2026-02-28"]);
+check("leap february", periodRange("month", "2024-02-14").end, "2024-02-29");
+check("month label", mo.label, "Feb 2026");
+check("year bounds", [periodRange("year","2026-05-05").start, periodRange("year","2026-05-05").end],
+  ["2026-01-01", "2026-12-31"]);
+
+// Stepping never lands mid-period or skips one.
+check("week back", periodRange("week", shiftPeriod("week","2026-08-21",-1)).start, "2026-08-10");
+check("month back over a year edge", shiftPeriod("month","2026-01-15",-1).slice(0,7), "2025-12");
+check("month forward", shiftPeriod("month","2026-12-15",1).slice(0,7), "2027-01");
+check("year back", shiftPeriod("year","2026-05-05",-1).slice(0,4), "2025");
+
+// Buckets come back oldest first and only count spending.
+const spread = [
+  t("2026-08-18", 100, "A"), t("2026-08-20", 50, "A"),   // week of 17 Aug
+  t("2026-08-11", 200, "B"),                              // week of 10 Aug
+  t("2026-08-19", 9999, "C", "income"),                   // ignored
+];
+const wb = periodBuckets(spread, catMap, "week", "2026-08-21", 3);
+check("three buckets oldest first", wb.map(b=>b.total), [0, 200, 150]);
+check("bucket keys are week starts", wb.map(b=>b.key), ["2026-08-03","2026-08-10","2026-08-17"]);
+
+const cp = comparePeriods(spread, catMap, "week", "2026-08-21");
+check("week compare totals", [cp.total, cp.prevTotal, cp.delta], [150, 200, -50]);
+check("week compare labels", cp.hasPrev, true);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -2,7 +2,8 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
 import { parseSMS, splitMessages, categorise, matchAccount, dupStatus, settle, kindOf } from "@/lib/parser";
-import { summarise, compareMonths, findRecurring, backlog } from "@/lib/insights";
+import { summarise, findRecurring, backlog,
+         periodRange, shiftPeriod, periodBuckets, comparePeriods, today } from "@/lib/insights";
 
 const inr = (n, compact = false) => {
   const v = Math.abs(Number(n) || 0);
@@ -19,18 +20,7 @@ const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov
 // the front keeps the day the bank recorded - building a Date and reading local
 // fields would shift it across the timezone boundary.
 const dayOf = (d) => String(d).slice(0,10);
-const monthOf = (d) => String(d).slice(0,7);
 const fmtDay = (d) => { const [, m, day] = dayOf(d).split("-"); return `${+day} ${MONTHS[+m-1] || ""}`; };
-const fmtMonth = (ym) => { const [y, m] = ym.split("-"); return `${MONTHS[+m-1]} ${y}`; };
-const shiftMonth = (ym, by) => {
-  const [y, m] = ym.split("-").map(Number);
-  const d = new Date(Date.UTC(y, m - 1 + by, 1));
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}`;
-};
-const thisMonth = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
-};
 
 export default function Page() {
   const [data, setData] = useState(null);
@@ -40,7 +30,8 @@ export default function Page() {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState("");
   const [kindFilter, setKindFilter] = useState("all");
-  const [month, setMonth] = useState(null);
+  const [period, setPeriod] = useState("month");
+  const [anchor, setAnchor] = useState(null);
   const [sel, setSel] = useState(null);
   const [search, setSearch] = useState("");
   const [catFilter, setCatFilter] = useState("all");
@@ -68,11 +59,16 @@ export default function Page() {
     const catMap = Object.fromEntries(categories.map(c=>[c.id,c]));
     const accMap = Object.fromEntries(accounts.map(a=>[a.id,a]));
 
-    // Landing on an empty month because the last import was August and it is
-    // now September is a dead end, so default to the newest month with data.
-    const present = [...new Set(txns.map(t => monthOf(t.date)))].sort();
-    const active = month || present[present.length-1] || thisMonth();
-    const monthTxns = txns.filter(t => monthOf(t.date) === active);
+    // Landing on an empty period because the last import was August and it is
+    // now September is a dead end, so default to the newest day with data.
+    const days = txns.map(t => String(t.date).slice(0,10)).sort();
+    const latest = days[days.length-1] || today();
+    const at = anchor || latest;
+    const range = periodRange(period, at);
+    const monthTxns = txns.filter(t => {
+      const d = String(t.date).slice(0,10);
+      return d >= range.start && d <= range.end;
+    });
 
     const sum = (list) => list.reduce((s,t)=>s+Number(t.amount),0);
     const of = (kind) => monthTxns.filter(t => kindOf(t, catMap) === kind);
@@ -105,18 +101,19 @@ export default function Page() {
     const byCat = Object.entries(m).map(([id,value]) => ({ id, value, ...catMap[id] })).sort((a,b)=>b.value-a.value);
 
     return { catMap, accMap, monthTxns, out, income, moved, net: income - out, byCat,
-             active, present, people, owedToYou, youOwe, debtTotal,
-             compare: compareMonths(txns, catMap, active),
+             at, latest, range, people, owedToYou, youOwe, debtTotal,
+             compare: comparePeriods(txns, catMap, period, at),
+             buckets: periodBuckets(txns, catMap, period, at, period === "year" ? 5 : 12),
              recurring: findRecurring(txns, catMap),
              todo: backlog(txns) };
-  }, [data, month]);
+  }, [data, anchor, period]);
 
   if (!data) return <div style={S.boot}><div style={S.bootMark}>₹</div><div style={S.bootLabel}>Opening your passbook</div></div>;
 
   const { txns, categories, accounts, rules } = data;
   const { catMap, accMap, monthTxns, out, income, moved, net, byCat,
-          active, present, people, owedToYou, youOwe, debtTotal,
-          compare, recurring, todo } = view;
+          at, latest, range, people, owedToYou, youOwe, debtTotal,
+          compare, buckets, recurring, todo } = view;
 
   const saveTxn = async (edited) => {
     setBusy(true);
@@ -302,11 +299,18 @@ export default function Page() {
       <div style={S.main}>
         {tab === "home" && (
           <>
+            <div style={S.periodTabs}>
+              {[["week","Week"],["month","Month"],["year","Year"]].map(([id,label])=>(
+                <button key={id} onClick={()=>{ setPeriod(id); setAnchor(at); }}
+                  style={{...S.periodTab, ...(period===id ? S.periodTabOn : null)}}>{label}</button>
+              ))}
+            </div>
             <div style={S.monthBar}>
-              <button style={S.monthNav} onClick={()=>setMonth(shiftMonth(active,-1))}>‹</button>
-              <span style={S.monthName}>{fmtMonth(active)}</span>
-              <button style={{...S.monthNav, opacity: active >= thisMonth() ? 0.3 : 1}}
-                disabled={active >= thisMonth()} onClick={()=>setMonth(shiftMonth(active,1))}>›</button>
+              <button style={S.monthNav} onClick={()=>setAnchor(shiftPeriod(period, at, -1))}>‹</button>
+              <span style={S.monthName}>{range.label}</span>
+              <button style={{...S.monthNav, opacity: range.end >= today() ? 0.3 : 1}}
+                disabled={range.end >= today()}
+                onClick={()=>setAnchor(shiftPeriod(period, at, 1))}>›</button>
             </div>
             <div style={S.slab}>
               <div style={S.slabLabel}>Spent</div>
@@ -316,12 +320,13 @@ export default function Page() {
                 {compare.hasPrev && (
                   <> · <span style={{color: compare.delta > 0 ? "#EF6F63" : "#4BB6A8"}}>
                     {compare.delta > 0 ? "▲" : "▼"} {inr(Math.abs(compare.delta), true)}
-                  </span> vs {fmtMonth(compare.prev)}</>
+                  </span> vs {compare.prevLabel}</>
                 )}
-                {monthTxns.length === 0 && present.length > 0 &&
-                  <> · <button style={S.linkBtn} onClick={()=>setMonth(present[present.length-1])}>
-                    jump to {fmtMonth(present[present.length-1])}</button></>}
+                {monthTxns.length === 0 && latest && (
+                  <> · <button style={S.linkBtn} onClick={()=>setAnchor(latest)}>go to latest</button></>
+                )}
               </div>
+              <TrendStrip buckets={buckets} activeKey={range.key} onPick={setAnchor} />
             </div>
 
             <div style={S.statRow}>
@@ -932,6 +937,34 @@ function MonthBars({ months }) {
   );
 }
 
+// The run-up to whatever period is being viewed, so a total is read against
+// its own history rather than on its own. Tapping a bar moves to that period.
+function TrendStrip({ buckets, activeKey, onPick }) {
+  if (!buckets?.length) return null;
+  const peak = Math.max(...buckets.map(b => b.total)) || 1;
+  const shown = buckets.filter(b => b.total > 0).length;
+  if (shown < 2) return null;
+
+  return (
+    <div style={S.trend}>
+      {buckets.map(b => {
+        const on = b.key === activeKey;
+        return (
+          <button key={b.key} style={S.trendCol} onClick={()=>onPick(b.start)} title={`${b.label}: ${inr(b.total)}`}>
+            <div style={S.trendSlot}>
+              <div style={{...S.trendBar, height:`${Math.max(2, (b.total / peak) * 100)}%`,
+                           background: on ? "#F2C14E" : "#2A3549"}} />
+            </div>
+            <span style={{...S.trendLabel, color: on ? "#F2C14E" : "#8494AC"}}>
+              {b.label.split(/[\s–]/)[0]}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 const ICONS = ["🏷️","🍜","🛒","🚗","🏠","💊","🎓","🐾","👶","💇","🎁","🔧","📱","✈️","🏋️","🙏","💼","🎨","☕","🍺"];
 const COLORS = ["#EF6F63","#7FA05A","#5B9BD5","#F2C14E","#D9569E","#9B7FD4","#4BB6A8","#C98A5E"];
 
@@ -1284,7 +1317,17 @@ const S = {
   card: { padding:"16px", borderTop:"1px solid #2A3549" }, cardHead: { fontSize:12, color:"#8494AC", textTransform:"uppercase", marginBottom:10 },
   row: { display:"flex", alignItems:"center", gap:10, padding:"10px 0", borderBottom:"1px solid #2A354980",
          width:"100%", background:"none", border:"none", borderBottomStyle:"solid", color:"#E8EDF5", fontSize:14, textAlign:"left" },
+  periodTabs: { display:"flex", gap:6, padding:"12px 16px 0" },
+  periodTab: { flex:1, background:"#171F2E", border:"1px solid #2A3549", color:"#8494AC",
+               borderRadius:999, padding:"7px 0", fontSize:12 },
+  periodTabOn: { background:"#F2C14E", borderColor:"#F2C14E", color:"#141A12", fontWeight:600 },
   monthBar: { display:"flex", alignItems:"center", justifyContent:"space-between", padding:"10px 16px 0" },
+  trend: { display:"flex", alignItems:"flex-end", gap:3, height:56, marginTop:14 },
+  trendCol: { flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:4,
+              background:"none", border:"none", padding:0 },
+  trendSlot: { width:"100%", height:40, display:"flex", alignItems:"flex-end" },
+  trendBar: { width:"100%", borderRadius:2, minHeight:2 },
+  trendLabel: { fontSize:9 },
   monthNav: { background:"none", border:"none", color:"#F2C14E", fontSize:26, lineHeight:1, padding:"0 12px" },
   monthName: { fontSize:13, color:"#8494AC", textTransform:"uppercase", letterSpacing:1 },
   // Pinned to the viewport and clipped, so the sheet inside can never grow
