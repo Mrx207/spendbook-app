@@ -562,8 +562,12 @@ export default function Page() {
         {tab === "import" && !draft && (
           <div style={{padding:"16px"}}>
             <div style={S.cardHead}>Upload a statement</div>
-            <p style={S.help}>CSV or Excel (.xlsx) exported from your bank. Columns are detected automatically.</p>
-            <input ref={fileRef} type="file" accept=".csv,.xlsx,.xlsm,text/csv" style={{display:"none"}}
+            <p style={S.help}>
+              Whatever your bank gives you — CSV, Excel, or the older .xls. Columns are detected
+              automatically, and the file is read by its contents rather than its name.
+            </p>
+            <input ref={fileRef} type="file" style={{display:"none"}}
+              accept=".csv,.xls,.xlsx,.xlsm,.txt,.tsv,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
               onChange={e => uploadStatement(e.target.files?.[0])} />
             <button style={{...S.btnSecondary, marginTop:10}} disabled={busy} onClick={()=>fileRef.current?.click()}>
               {busy ? "Reading…" : "Choose file"}
