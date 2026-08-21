@@ -58,5 +58,16 @@ check("dayless year assumed", jan?.slice(0,4), String(jan > `${yr}-${String(now.
 check("full date still wins", parseAnyDate("on 20-08-26 ref 123"), "2026-08-20");
 check("long digits are not dates", parseAnyDate("Call 18002586161 for help"), null);
 
+
+// IDFC transfer alert: the recipient is named before the verb, and the message
+// carries both "debited" and "credited" plus a second amount for the balance.
+const idfc = "Your A/c XX2879 debited by Rs. 5,000.00 on 21/08/26; KAVITA SANJAY GADADE credited. RRN 659956381214. Available balance Rs. 2,90,937.67. Team IDFC FIRST Bank";
+check("transfer alert is a debit", read(idfc), [{ type:"debit", amount:5000, merchant:"KAVITA SANJAY GADADE" }]);
+check("balance is not mistaken for the amount", parseSMS(idfc).money[0].val, 5000);
+check("keeps the reference", parseSMS(idfc).ref, "659956381214");
+check("keeps the account tail", parseSMS(idfc).last4, "2879");
+check("plain credit keeps working",
+  read("Your a/c XX1234 is credited with Rs.5000 on 19-08-26 by NEFT").map(x=>x.type), ["credit"]);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
