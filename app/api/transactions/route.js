@@ -10,7 +10,9 @@ const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 export async function GET() {
   await ensureSchema();
   const [{ rows: txns }, { rows: categories }, { rows: accounts }, { rows: rules }, { rows: rates }, { rows: debts }] = await Promise.all([
-    sql`SELECT * FROM transactions ORDER BY date DESC, time DESC NULLS LAST, created_at DESC LIMIT 2000`,
+    // High enough that a full history arrives intact; the old cap silently
+    // hid rows once the ledger outgrew it, which quietly wrongs every total.
+    sql`SELECT * FROM transactions ORDER BY date DESC, time DESC NULLS LAST, created_at DESC LIMIT 20000`,
     sql`SELECT * FROM categories`, sql`SELECT * FROM accounts`, sql`SELECT * FROM rules`,
     sql`SELECT * FROM rates`,
     sql`SELECT * FROM debts ORDER BY outstanding DESC, created_at DESC`,
@@ -46,7 +48,30 @@ export async function POST(req) {
 
   const { rows: cats } = await sql`SELECT id, kind FROM categories`;
   const catKind = Object.fromEntries(cats.map(c => [c.id, c.kind]));
-  const rows = valid.map(t => toRow(t, Array.isArray(body.txns) ? "statement" : "manual", catKind));
+
+  // The client flags duplicates in the preview, but it can be overridden there,
+  // and nothing stops the same file being imported twice. The ledger is the
+  // authority on what it already holds, so the check is repeated here.
+  const { rows: existing } = await sql`SELECT date, amount, type, merchant, ref FROM transactions`;
+  const fingerprint = (date, amount, type, merchant) =>
+    `${String(date).slice(0,10)}|${Number(amount).toFixed(2)}|${type}|${String(merchant||"").trim().toLowerCase()}`;
+
+  const seen = new Set(existing.map(e => fingerprint(e.date, e.amount, e.type, e.merchant)));
+  const refs = new Set(existing.filter(e => e.ref).map(e => String(e.ref).toUpperCase()));
+
+  const fresh = [];
+  let duplicates = 0;
+  for (const t of valid) {
+    const fp = fingerprint(t.date, t.amount, t.type, t.merchant);
+    const ref = t.ref ? String(t.ref).toUpperCase() : null;
+    if (seen.has(fp) || (ref && refs.has(ref))) { duplicates++; continue; }
+    seen.add(fp);
+    if (ref) refs.add(ref);
+    fresh.push(t);
+  }
+  if (!fresh.length) return Response.json({ added: 0, duplicates });
+
+  const rows = fresh.map(t => toRow(t, Array.isArray(body.txns) ? "statement" : "manual", catKind));
 
   // Chunked to stay well under Postgres' bind-parameter ceiling.
   const perChunk = Math.floor(30000 / COLS.length);
@@ -63,7 +88,7 @@ export async function POST(req) {
     );
     added += res.rowCount;
   }
-  return Response.json({ added });
+  return Response.json({ added, duplicates });
 }
 
 // Edits from the transaction sheet. Only the fields worth correcting by hand

@@ -56,12 +56,28 @@ export async function DELETE(req) {
   if (!rows.length) return Response.json({ error: "Nothing to undo" }, { status: 404 });
 
   const entry = rows[0];
-  const before = typeof entry.payload === "string" ? JSON.parse(entry.payload) : entry.payload;
+  const payload = typeof entry.payload === "string" ? JSON.parse(entry.payload) : entry.payload;
 
-  for (const r of before) {
-    await sql`UPDATE transactions SET category_id = ${r.category_id}, kind = ${r.kind}, person = ${r.person}
-      WHERE id = ${r.id}`;
+  // Two shapes: a categorise records the previous values to write back, while a
+  // cleanup records whole rows that have to be put back.
+  let restored = 0;
+  if (Array.isArray(payload)) {
+    for (const r of payload) {
+      await sql`UPDATE transactions SET category_id = ${r.category_id}, kind = ${r.kind}, person = ${r.person}
+        WHERE id = ${r.id}`;
+      restored++;
+    }
+  } else if (payload?.deleted) {
+    for (const t of payload.deleted) {
+      await sql`INSERT INTO transactions
+        (id,type,amount,date,time,merchant,note,category_id,account_id,source,ref,raw,fx_amount,fx_currency,estimated,kind,person)
+        VALUES (${t.id},${t.type},${t.amount},${t.date},${t.time},${t.merchant},${t.note},${t.category_id},
+          ${t.account_id},${t.source},${t.ref},${t.raw},${t.fx_amount},${t.fx_currency},${t.estimated},${t.kind},${t.person})
+        ON CONFLICT (id) DO NOTHING`;
+      restored++;
+    }
   }
+
   await sql`DELETE FROM undo_log WHERE id = ${entry.id}`;
-  return Response.json({ restored: before.length, label: entry.label });
+  return Response.json({ restored, label: entry.label });
 }

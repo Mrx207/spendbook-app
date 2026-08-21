@@ -50,10 +50,13 @@ export default function Page() {
   const [showTidy, setShowTidy] = useState(false);
   const [bulk, setBulk] = useState(null);
   const [undo, setUndo] = useState(null);
+  const [dupes, setDupes] = useState(null);
+  const [showDupes, setShowDupes] = useState(false);
   const fileRef = React.useRef(null);
 
   const load = () => fetch("/api/transactions").then(r=>r.json()).then(setData);
-  useEffect(() => { load(); }, []);
+  const checkDupes = () => fetch("/api/dedupe").then(r=>r.json()).then(setDupes).catch(()=>{});
+  useEffect(() => { load(); checkDupes(); }, []);
 
   const flash = (m) => { setToast(m); setTimeout(()=>setToast(""), 2200); };
 
@@ -150,6 +153,18 @@ export default function Page() {
     setUndo({ id: body.undoId, label: label || `Filed ${body.updated} entries` });
     await load();
     return true;
+  };
+
+  const removeDupes = async () => {
+    setBusy(true);
+    const r = await fetch("/api/dedupe", { method: "POST" });
+    const body = await r.json().catch(() => ({}));
+    setBusy(false);
+    if (!r.ok) return flash(body.error || "Could not clean those up");
+    setShowDupes(false);
+    setUndo({ id: body.undoId, label: `Removed ${body.removed} duplicates` });
+    flash(`Removed ${body.removed}`);
+    await load(); checkDupes();
   };
 
   const undoLast = async () => {
@@ -275,8 +290,11 @@ export default function Page() {
     const body = await r.json().catch(() => ({}));
     setBusy(false);
     if (!r.ok) return flash(body.error || "Could not save those entries");
-    setDraft(null); setBlob(""); flash(`${body.added} entries added`);
-    load(); setTab("log");
+    setDraft(null); setBlob("");
+    flash(body.duplicates
+      ? `${body.added} added · ${body.duplicates} skipped as duplicates`
+      : `${body.added} entries added`);
+    load(); checkDupes(); setTab("log");
   };
 
   return (
@@ -324,6 +342,17 @@ export default function Page() {
               <div style={S.movedNote}>
                 {inr(moved, true)} moved between your own accounts, cards and investments — not counted as spending.
               </div>
+            )}
+
+            {dupes?.extra > 0 && (
+              <button style={S.nudge} onClick={()=>setShowDupes(true)}>
+                <span style={{fontSize:20}}>⧉</span>
+                <span style={{flex:1, textAlign:"left"}}>
+                  <b>{dupes.extra} duplicate entries</b> worth {inr(dupes.value, true)}.
+                  <br/><span style={S.small}>Same transaction imported more than once — your totals are overstated.</span>
+                </span>
+                <span style={{color:"#F2C14E"}}>›</span>
+              </button>
             )}
 
             {todo.length > 0 && (
@@ -673,6 +702,36 @@ export default function Page() {
             });
             if (ok) setBulk(null);
           }} />
+      )}
+      {showDupes && dupes && (
+        <div style={S.overlay} onClick={()=>setShowDupes(false)}>
+          <div style={S.sheet} onClick={e=>e.stopPropagation()}>
+            <div style={S.sheetGrab} />
+            <div style={S.sheetHead}>
+              <span>Duplicate entries</span>
+              <button style={S.linkBtn} onClick={()=>setShowDupes(false)}>Close</button>
+            </div>
+            <p style={S.help}>
+              {dupes.extra} entries appear more than once, worth {inr(dupes.value)} in total —
+              almost always the same statement imported twice. The earliest copy of each is kept.
+            </p>
+            <div style={{...S.cardHead, marginTop:16}}>Largest</div>
+            {dupes.sample.map((s,i) => (
+              <div key={i} style={S.row}>
+                <span style={{...S.chip, background:"#EF6F6322", color:"#EF6F63"}}>⧉</span>
+                <div style={{flex:1, minWidth:0, textAlign:"left"}}>
+                  <div style={{fontSize:14, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{s.merchant}</div>
+                  <div style={S.small}>{fmtDay(s.date)} · {s.copies} copies</div>
+                </div>
+                <span style={{whiteSpace:"nowrap"}}>{inr(s.amount, true)}</span>
+              </div>
+            ))}
+            <button style={{...S.btnPrimary, marginTop:14}} disabled={busy} onClick={removeDupes}>
+              {busy ? "Cleaning…" : `Remove ${dupes.extra} duplicates`}
+            </button>
+            <p style={{...S.hint, textAlign:"center"}}>You can undo this straight after.</p>
+          </div>
+        </div>
       )}
       {undo && (
         <div style={S.undoBar}>
