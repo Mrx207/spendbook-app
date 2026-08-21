@@ -1,5 +1,6 @@
 import { ensureSchema, sql, query } from "@/lib/db";
 import { uid } from "@/lib/parser";
+import { toISODate } from "@/lib/dates";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,7 +33,7 @@ export async function GET() {
       .sort((a, b) => Number(b.amount) - Number(a.amount))
       .slice(0, 12)
       .map(r => ({
-        date: String(r.date).slice(0, 10), amount: Number(r.amount),
+        date: toISODate(r.date), amount: Number(r.amount),
         merchant: r.merchant, copies: Number(r.n),
       })),
   });

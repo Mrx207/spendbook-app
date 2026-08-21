@@ -1,5 +1,6 @@
 import { ensureSchema, sql, query } from "@/lib/db";
 import { uid, categorise } from "@/lib/parser";
+import { toISODate } from "@/lib/dates";
 
 export const runtime = "nodejs";
 
@@ -54,7 +55,7 @@ export async function POST(req) {
   // authority on what it already holds, so the check is repeated here.
   const { rows: existing } = await sql`SELECT date, amount, type, merchant, ref FROM transactions`;
   const fingerprint = (date, amount, type, merchant) =>
-    `${String(date).slice(0,10)}|${Number(amount).toFixed(2)}|${type}|${String(merchant||"").trim().toLowerCase()}`;
+    `${toISODate(date)}|${Number(amount).toFixed(2)}|${type}|${String(merchant||"").trim().toLowerCase()}`;
 
   const seen = new Set(existing.map(e => fingerprint(e.date, e.amount, e.type, e.merchant)));
   const refs = new Set(existing.filter(e => e.ref).map(e => String(e.ref).toUpperCase()));
