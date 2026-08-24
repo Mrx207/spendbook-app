@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
 import { parseSMS, splitMessages, categorise, matchAccount, dupStatus, settle, kindOf } from "@/lib/parser";
 import { summarise, findRecurring, backlog,
-         periodRange, shiftPeriod, periodBuckets, comparePeriods, today, reconcile } from "@/lib/insights";
+         periodRange, shiftPeriod, periodBuckets, comparePeriods, today, reconcile, findReversals } from "@/lib/insights";
 
 const inr = (n, compact = false) => {
   const v = Math.abs(Number(n) || 0);
@@ -44,6 +44,7 @@ export default function Page() {
   const [dupes, setDupes] = useState(null);
   const [showDupes, setShowDupes] = useState(false);
   const [showAudit, setShowAudit] = useState(false);
+  const [showRev, setShowRev] = useState(false);
   const fileRef = React.useRef(null);
 
   const load = () => fetch("/api/transactions").then(r=>r.json()).then(setData);
@@ -107,7 +108,8 @@ export default function Page() {
              buckets: periodBuckets(txns, catMap, period, at, period === "year" ? 5 : 12),
              recurring: findRecurring(txns, catMap),
              todo: backlog(txns),
-             audit: reconcile(txns) };
+             audit: reconcile(txns),
+             reversals: findReversals(txns) };
   }, [data, anchor, period]);
 
   if (!data) return <div style={S.boot}><div style={S.bootMark}>₹</div><div style={S.bootLabel}>Opening your passbook</div></div>;
@@ -115,7 +117,7 @@ export default function Page() {
   const { txns, categories, accounts, rules } = data;
   const { catMap, accMap, monthTxns, out, income, moved, net, byCat,
           at, latest, range, people, owedToYou, youOwe, debtTotal,
-          compare, buckets, recurring, todo, audit } = view;
+          compare, buckets, recurring, todo, audit, reversals } = view;
 
   const saveTxn = async (edited) => {
     setBusy(true);
@@ -372,6 +374,17 @@ export default function Page() {
                       </span>
                     </>
                   )}
+                </span>
+                <span style={{color:"#F2C14E"}}>›</span>
+              </button>
+            )}
+
+            {reversals.count > 0 && (
+              <button style={S.nudge} onClick={()=>setShowRev(true)}>
+                <span style={{fontSize:20}}>↩️</span>
+                <span style={{flex:1, textAlign:"left"}}>
+                  <b>{reversals.count} {reversals.count === 1 ? "payment" : "payments"} came back</b>, {inr(reversals.total, true)} in total.
+                  <br/><span style={S.small}>Counted as both spending and income right now, when nothing happened.</span>
                 </span>
                 <span style={{color:"#F2C14E"}}>›</span>
               </button>
@@ -735,6 +748,42 @@ export default function Page() {
             });
             if (ok) setBulk(null);
           }} />
+      )}
+      {showRev && (
+        <Sheet title="Payments that came back" onClose={()=>setShowRev(false)}
+          footer={
+            <button style={S.btnPrimary} disabled={busy}
+              onClick={async () => {
+                const ids = reversals.pairs.flatMap(p => [p.debit.id, p.credit.id]);
+                const ok = await fileMany({ ids, category_id: "transfer",
+                  label: `Cancelled out ${reversals.pairs.length} reversed payments` });
+                if (ok) setShowRev(false);
+              }}>
+              {busy ? "Filing…" : `Cancel out all ${reversals.count}`}
+            </button>
+          }>
+          <p style={S.help}>
+            The same amount left and returned within a few days — a failed transfer, a declined
+            card, a cancelled order. Filing both sides as “not spending” keeps them in your ledger
+            while leaving them out of the totals, which is what actually happened.
+          </p>
+          {reversals.pairs.map((p,i) => (
+            <div key={i} style={{...S.slip, flexDirection:"column", gap:6}}>
+              <div style={{display:"flex", justifyContent:"space-between", width:"100%"}}>
+                <b style={{fontSize:15}}>{inr(p.amount)}</b>
+                <span style={S.small}>{p.days === 0 ? "same day" : `${p.days} day${p.days>1?"s":""} later`}</span>
+              </div>
+              <div style={{...S.small, width:"100%"}}>
+                <div>↑ {fmtDay(p.debit.date)} · {p.debit.merchant}</div>
+                <div>↓ {fmtDay(p.credit.date)} · {p.credit.merchant}</div>
+              </div>
+            </div>
+          ))}
+          <p style={{...S.hint, marginTop:6}}>
+            Check these first: someone repaying you the exact amount you sent looks the same from
+            here, and that is real money in. You can undo this straight after.
+          </p>
+        </Sheet>
       )}
       {showAudit && (
         <Sheet title="Checked against your bank" onClose={()=>setShowAudit(false)}>

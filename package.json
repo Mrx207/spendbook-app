@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "node tests/dates.test.mjs && node tests/reconcile.test.mjs && node tests/sms.test.mjs && node tests/statement.test.mjs && node tests/workbook.test.mjs && node tests/kind.test.mjs && node tests/insights.test.mjs"
+    "test": "node tests/dates.test.mjs && node tests/reversals.test.mjs && node tests/reconcile.test.mjs && node tests/sms.test.mjs && node tests/statement.test.mjs && node tests/workbook.test.mjs && node tests/kind.test.mjs && node tests/insights.test.mjs"
   },
   "dependencies": {
     "next": "14.2.5",
