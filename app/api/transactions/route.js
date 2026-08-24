@@ -54,24 +54,45 @@ export async function POST(req) {
   // The client flags duplicates in the preview, but it can be overridden there,
   // and nothing stops the same file being imported twice. The ledger is the
   // authority on what it already holds, so the check is repeated here.
-  const { rows: existing } = await sql`SELECT date, amount, type, merchant, ref FROM transactions`;
+  const { rows: existing } = await sql`SELECT id, date, amount, type, merchant, ref, balance FROM transactions`;
   const fingerprint = (date, amount, type, merchant) =>
     `${toISODate(date)}|${Number(amount).toFixed(2)}|${type}|${String(merchant||"").trim().toLowerCase()}`;
 
-  const seen = new Set(existing.map(e => fingerprint(e.date, e.amount, e.type, e.merchant)));
-  const refs = new Set(existing.filter(e => e.ref).map(e => String(e.ref).toUpperCase()));
+  const byPrint = new Map();
+  const byRef = new Map();
+  for (const e of existing) {
+    byPrint.set(fingerprint(e.date, e.amount, e.type, e.merchant), e);
+    if (e.ref) byRef.set(String(e.ref).toUpperCase(), e);
+  }
 
   const fresh = [];
   let duplicates = 0;
+  let enriched = 0;
   for (const t of valid) {
     const fp = fingerprint(t.date, t.amount, t.type, t.merchant);
     const ref = t.ref ? String(t.ref).toUpperCase() : null;
-    if (seen.has(fp) || (ref && refs.has(ref))) { duplicates++; continue; }
-    seen.add(fp);
-    if (ref) refs.add(ref);
+    const match = byPrint.get(fp) || (ref ? byRef.get(ref) : null);
+
+    if (match) {
+      duplicates++;
+      // Re-importing a period already held used to achieve nothing. When the
+      // stored row predates a column the file can fill - the running balance,
+      // which is what makes the ledger checkable - take it rather than
+      // discarding the file's copy of the same transaction.
+      if ((match.balance === null || match.balance === undefined) && t.balance != null) {
+        await sql`UPDATE transactions SET balance = ${t.balance} WHERE id = ${match.id}`;
+        match.balance = t.balance;
+        enriched++;
+      }
+      continue;
+    }
+
+    const row = { ...t };
+    byPrint.set(fp, row);
+    if (ref) byRef.set(ref, row);
     fresh.push(t);
   }
-  if (!fresh.length) return Response.json({ added: 0, duplicates });
+  if (!fresh.length) return Response.json({ added: 0, duplicates, enriched });
 
   const rows = fresh.map(t => toRow(t, Array.isArray(body.txns) ? "statement" : "manual", catKind));
 
@@ -90,7 +111,7 @@ export async function POST(req) {
     );
     added += res.rowCount;
   }
-  return Response.json({ added, duplicates });
+  return Response.json({ added, duplicates, enriched });
 }
 
 // Edits from the transaction sheet. Only the fields worth correcting by hand

@@ -290,9 +290,11 @@ export default function Page() {
     setBusy(false);
     if (!r.ok) return flash(body.error || "Could not save those entries");
     setDraft(null); setBlob("");
-    flash(body.duplicates
-      ? `${body.added} added · ${body.duplicates} skipped as duplicates`
-      : `${body.added} entries added`);
+    flash([
+      `${body.added} added`,
+      body.duplicates ? `${body.duplicates} already there` : "",
+      body.enriched ? `${body.enriched} balances filled in` : "",
+    ].filter(Boolean).join(" · "));
     load(); checkDupes(); setTab("log");
   };
 
