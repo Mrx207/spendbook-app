@@ -76,9 +76,9 @@ export async function POST(req) {
     const kind = categories.find(c => c.id === txn.category_id)?.kind
       || (txn.type === "credit" ? "income" : "expense");
     await sql`INSERT INTO transactions
-      (id,type,amount,date,time,merchant,note,category_id,account_id,source,ref,raw,fx_amount,fx_currency,estimated,kind)
+      (id,type,amount,date,time,merchant,note,category_id,account_id,source,ref,raw,fx_amount,fx_currency,estimated,kind,balance)
       VALUES (${txn.id},${txn.type},${txn.amount},${txn.date},${txn.time},${txn.merchant},${txn.note||""},
-        ${txn.category_id},${account_id},${"sms-webhook"},${txn.ref},${txn.raw},${txn.fxAmount},${txn.fxCurrency},${!!txn.estimated},${kind})`;
+        ${txn.category_id},${account_id},${"sms-webhook"},${txn.ref},${txn.raw},${txn.fxAmount},${txn.fxCurrency},${!!txn.estimated},${kind},${txn.balance ?? null})`;
     added++;
   }
 

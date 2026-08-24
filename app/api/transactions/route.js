@@ -22,7 +22,7 @@ export async function GET() {
 }
 
 const COLS = ["id","type","amount","date","time","merchant","note","category_id",
-  "account_id","source","ref","raw","fx_amount","fx_currency","estimated","kind","person"];
+  "account_id","source","ref","raw","fx_amount","fx_currency","estimated","kind","person","balance"];
 
 const toRow = (t, fallbackSource, catKind) => [
   t.id || uid(), t.type, t.amount, t.date, t.time || "", t.merchant || "Unknown", t.note || "",
@@ -33,6 +33,7 @@ const toRow = (t, fallbackSource, catKind) => [
   // kind disagrees with its category and skew the totals.
   catKind[t.category_id ?? t.categoryId] || (t.type === "credit" ? "income" : "expense"),
   (t.person || "").trim() || null,
+  t.balance ?? null,
 ];
 
 // Accepts either a single transaction or { txns: [...] } from an import.

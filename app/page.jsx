@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
 import { parseSMS, splitMessages, categorise, matchAccount, dupStatus, settle, kindOf } from "@/lib/parser";
 import { summarise, findRecurring, backlog,
-         periodRange, shiftPeriod, periodBuckets, comparePeriods, today } from "@/lib/insights";
+         periodRange, shiftPeriod, periodBuckets, comparePeriods, today, reconcile } from "@/lib/insights";
 
 const inr = (n, compact = false) => {
   const v = Math.abs(Number(n) || 0);
@@ -43,6 +43,7 @@ export default function Page() {
   const [undo, setUndo] = useState(null);
   const [dupes, setDupes] = useState(null);
   const [showDupes, setShowDupes] = useState(false);
+  const [showAudit, setShowAudit] = useState(false);
   const fileRef = React.useRef(null);
 
   const load = () => fetch("/api/transactions").then(r=>r.json()).then(setData);
@@ -105,7 +106,8 @@ export default function Page() {
              compare: comparePeriods(txns, catMap, period, at),
              buckets: periodBuckets(txns, catMap, period, at, period === "year" ? 5 : 12),
              recurring: findRecurring(txns, catMap),
-             todo: backlog(txns) };
+             todo: backlog(txns),
+             audit: reconcile(txns) };
   }, [data, anchor, period]);
 
   if (!data) return <div style={S.boot}><div style={S.bootMark}>₹</div><div style={S.bootLabel}>Opening your passbook</div></div>;
@@ -113,7 +115,7 @@ export default function Page() {
   const { txns, categories, accounts, rules } = data;
   const { catMap, accMap, monthTxns, out, income, moved, net, byCat,
           at, latest, range, people, owedToYou, youOwe, debtTotal,
-          compare, buckets, recurring, todo } = view;
+          compare, buckets, recurring, todo, audit } = view;
 
   const saveTxn = async (edited) => {
     setBusy(true);
@@ -347,6 +349,30 @@ export default function Page() {
               <div style={S.movedNote}>
                 {inr(moved, true)} moved between your own accounts, cards and investments — not counted as spending.
               </div>
+            )}
+
+            {audit.verifiable && (
+              <button style={S.nudge} onClick={()=>setShowAudit(true)}>
+                <span style={{fontSize:20}}>{audit.count ? "⚠️" : "✓"}</span>
+                <span style={{flex:1, textAlign:"left"}}>
+                  {audit.count === 0 ? (
+                    <>
+                      <b>Nothing missing.</b>
+                      <br/><span style={S.small}>
+                        {audit.checked} entries agree with the balances your bank reported.
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <b>{inr(audit.total, true)} unaccounted for</b> across {audit.count} {audit.count === 1 ? "gap" : "gaps"}.
+                      <br/><span style={S.small}>
+                        Your bank's balances moved further than the entries here explain.
+                      </span>
+                    </>
+                  )}
+                </span>
+                <span style={{color:"#F2C14E"}}>›</span>
+              </button>
             )}
 
             {dupes?.extra > 0 && (
@@ -707,6 +733,54 @@ export default function Page() {
             });
             if (ok) setBulk(null);
           }} />
+      )}
+      {showAudit && (
+        <Sheet title="Checked against your bank" onClose={()=>setShowAudit(false)}>
+          <p style={S.help}>
+            Every alert and statement row states the balance left afterwards. Between any two of
+            them the balance should move by exactly that entry's amount — where it moved further,
+            something happened that never reached this ledger.
+          </p>
+          <div style={S.statRow}>
+            <div style={S.stat}>
+              <div style={S.statLabel}>Checks made</div>
+              <div style={S.statAmt}>{audit.checked}</div>
+            </div>
+            <div style={S.stat}>
+              <div style={S.statLabel}>Gaps</div>
+              <div style={{...S.statAmt, color: audit.count ? "#EF6F63" : "#4BB6A8"}}>{audit.count}</div>
+            </div>
+          </div>
+
+          {audit.count === 0 ? (
+            <p style={{...S.help, marginTop:16}}>
+              Nothing unaccounted for. Anything that never generated a message would still be
+              caught by importing the statement, which lists every transaction whether it
+              messaged you or not.
+            </p>
+          ) : (
+            <>
+              <div style={{...S.cardHead, marginTop:18}}>Where the balance jumped</div>
+              {audit.gaps.slice(0, 25).map((g,i) => (
+                <button key={i} style={S.row} onClick={()=>{ setShowAudit(false); setTab("log"); setSearch(""); setAnchor(g.before); }}>
+                  <span style={{...S.chip, background:"#EF6F6322", color:"#EF6F63"}}>
+                    {g.direction === "credit" ? "↓" : "↑"}
+                  </span>
+                  <div style={{flex:1, minWidth:0, textAlign:"left"}}>
+                    <div style={{fontSize:14}}>{inr(g.missing)} {g.direction === "credit" ? "in" : "out"}</div>
+                    <div style={S.small}>between {fmtDay(g.after)} and {fmtDay(g.before)}</div>
+                  </div>
+                  <span style={S.small}>{inr(g.fromBalance, true)} → {inr(g.toBalance, true)}</span>
+                </button>
+              ))}
+              <p style={{...S.help, marginTop:14}}>
+                Importing the statement for these dates fills the gaps — it lists everything,
+                including transactions that never sent a message. Duplicates are refused, so
+                re-importing a period you already have is safe.
+              </p>
+            </>
+          )}
+        </Sheet>
       )}
       {showDupes && dupes && (
         <Sheet title="Duplicate entries" onClose={()=>setShowDupes(false)}
