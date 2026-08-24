@@ -82,5 +82,25 @@ check("reports as unverifiable", none.verifiable, false);
 const rounding = [t("2026-08-01", 100, "debit", 900.0), t("2026-08-02", 100, "debit", 799.6)];
 check("small drift tolerated", reconcile(rounding).count, 0);
 
+// Same-day rows with no time must not be ordered by the balance itself - a
+// day of debits has balance falling as it goes, so sorting ascending puts the
+// last transaction first and reports a gap on every single adjacent pair,
+// none of them real. This is the exact chain from a live ledger: four same-
+// day debits, in insertion order, no time on any of them.
+const sameDayNoTime = [
+  { id:"zepto", date:"2026-08-24", amount:55,  type:"debit", balance:290317.67, account_id:"a1", merchant:"Zepto", time:"", created_at:"2026-08-24T07:29:41Z" },
+  { id:"basheer", date:"2026-08-24", amount:400, type:"debit", balance:289917.67, account_id:"a1", merchant:"Basheer", time:"", created_at:"2026-08-24T15:40:15Z" },
+  { id:"mohd", date:"2026-08-24", amount:45,  type:"debit", balance:289872.67, account_id:"a1", merchant:"Mohd", time:"", created_at:"2026-08-24T15:50:59Z" },
+  { id:"priyanka", date:"2026-08-24", amount:76,  type:"debit", balance:289796.67, account_id:"a1", merchant:"Priyanka", time:"", created_at:"2026-08-24T15:51:54Z" },
+];
+check("no phantom gaps when ordered by insertion time", reconcile(sameDayNoTime).count, 0);
+
+// A real time on the message still wins over insertion order.
+const withTime = [
+  { id:"morning", date:"2026-08-24", amount:100, type:"debit", balance:900, account_id:"a1", merchant:"AM", time:"09:00", created_at:"2026-08-24T20:00:00Z" },
+  { id:"evening", date:"2026-08-24", amount:50,  type:"debit", balance:850, account_id:"a1", merchant:"PM", time:"18:00", created_at:"2026-08-24T09:00:00Z" },
+];
+check("time beats insertion order", reconcile(withTime).count, 0);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
