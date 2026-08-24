@@ -23,7 +23,7 @@ check("balance reaches parseSMS",
 
 // --- reconciliation ---
 const t = (date, amount, type, balance, extra={}) =>
-  ({ id: date+amount, date, amount, type, balance, account_id: "a1", ...extra });
+  ({ id: date+amount, date, amount, type, balance, account_id: "a1", merchant: "M"+amount, ...extra });
 
 // A complete run: each balance follows from the one before.
 const clean = [
@@ -45,7 +45,13 @@ const gap = reconcile(missing);
 check("gap found", gap.count, 1);
 check("gap amount", gap.gaps[0].missing, 300);
 check("gap direction is money out", gap.gaps[0].direction, "debit");
-check("gap window", [gap.gaps[0].after, gap.gaps[0].before], ["2026-08-02", "2026-08-04"]);
+// The gap must name the two ledger rows it sits between, in full - a date
+// range and a compacted balance give nothing to search a bank's SMS thread
+// for. This is the detail the investigation actually depends on.
+check("gap names the surrounding rows",
+  [gap.gaps[0].before.date, gap.gaps[0].before.merchant, gap.gaps[0].before.balance,
+   gap.gaps[0].after.date, gap.gaps[0].after.merchant, gap.gaps[0].after.balance],
+  ["2026-08-02", "M200", 700, "2026-08-04", "M50", 350]);
 check("gap total", gap.total, 300);
 
 // Unrecorded money arriving reads as a credit gap.

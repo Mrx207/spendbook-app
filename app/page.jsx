@@ -812,17 +812,39 @@ export default function Page() {
           ) : (
             <>
               <div style={{...S.cardHead, marginTop:18}}>Where the balance jumped</div>
+              <p style={S.small}>
+                Between these two entries, {audit.gaps.length===1?"the":"each"} bank balance moved by more
+                than what's recorded — check your SMS between them for what's missing.
+              </p>
               {audit.gaps.slice(0, 25).map((g,i) => (
-                <button key={i} style={S.row} onClick={()=>{ setShowAudit(false); setTab("log"); setSearch(""); setAnchor(g.before); }}>
-                  <span style={{...S.chip, background:"#EF6F6322", color:"#EF6F63"}}>
-                    {g.direction === "credit" ? "↓" : "↑"}
-                  </span>
-                  <div style={{flex:1, minWidth:0, textAlign:"left"}}>
-                    <div style={{fontSize:14}}>{inr(g.missing)} {g.direction === "credit" ? "in" : "out"}</div>
-                    <div style={S.small}>between {fmtDay(g.after)} and {fmtDay(g.before)}</div>
+                <div key={i} style={S.gapCard}>
+                  <div style={S.gapHead}>
+                    <span style={{...S.chip, background:"#EF6F6322", color:"#EF6F63", flexShrink:0}}>
+                      {g.direction === "credit" ? "↓" : "↑"}
+                    </span>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:15}}>{inr(g.missing)} {g.direction === "credit" ? "came in" : "went out"} unrecorded</div>
+                      <div style={S.small}>account …{g.account}</div>
+                    </div>
                   </div>
-                  <span style={S.small}>{inr(g.fromBalance, true)} → {inr(g.toBalance, true)}</span>
-                </button>
+                  {[g.before, g.after].map((row, j) => (
+                    <button key={j} style={S.gapRow}
+                      onClick={()=>{
+                        const full = txns.find(x=>x.id===row.id);
+                        setShowAudit(false);
+                        if (full) setSel(full); else { setTab("log"); setSearch(row.merchant); }
+                      }}>
+                      <span style={S.small}>{j===0 ? "Last known good" : "Balance doesn't match"}</span>
+                      <div style={{display:"flex", justifyContent:"space-between", width:"100%"}}>
+                        <span>{fmtDay(row.date)}{row.time?` · ${row.time}`:""} · {row.merchant}</span>
+                        <span>{row.type==="credit"?"+":"−"}{inr(row.amount).slice(1)}</span>
+                      </div>
+                      <span style={{...S.small, color: j===1 ? "#EF6F63" : "#8494AC"}}>
+                        balance after: {inr(row.balance)}
+                      </span>
+                    </button>
+                  ))}
+                </div>
               ))}
               <p style={{...S.help, marginTop:14}}>
                 Importing the statement for these dates fills the gaps — it lists everything,
@@ -1479,6 +1501,10 @@ const S = {
   remember: { display:"flex", gap:9, alignItems:"flex-start", background:"#171F2E", border:"1px solid #2A3549",
               borderRadius:10, padding:11, fontSize:12, color:"#8494AC", lineHeight:1.5, marginBottom:4 },
   barTrack: { width:"100%", height:5, background:"#0E1420", borderRadius:3, overflow:"hidden" },
+  gapCard: { background:"#171F2E", border:"1px solid #2A3549", borderRadius:12, padding:12, marginBottom:10 },
+  gapHead: { display:"flex", alignItems:"center", gap:10, marginBottom:10 },
+  gapRow: { display:"block", width:"100%", textAlign:"left", background:"#0E1420", border:"1px solid #2A354980",
+            borderRadius:9, padding:"8px 10px", marginTop:6, color:"#E8EDF5", fontSize:13 },
   searchWrap: { position:"relative", marginBottom:10 },
   clearBtn: { position:"absolute", right:6, top:"50%", transform:"translateY(-50%)", background:"none",
               border:"none", color:"#8494AC", fontSize:20, padding:"0 8px" },

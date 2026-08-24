@@ -58,11 +58,16 @@ export async function POST(req) {
   const fingerprint = (date, amount, type, merchant) =>
     `${toISODate(date)}|${Number(amount).toFixed(2)}|${type}|${String(merchant||"").trim().toLowerCase()}`;
 
-  const byPrint = new Map();
   const byRef = new Map();
+  const byPrint = new Map(); // fingerprint -> candidate rows sharing it
+  const addCandidate = (row, fp, ref) => {
+    if (ref) byRef.set(ref, row);
+    if (!byPrint.has(fp)) byPrint.set(fp, []);
+    byPrint.get(fp).push(row);
+  };
   for (const e of existing) {
-    byPrint.set(fingerprint(e.date, e.amount, e.type, e.merchant), e);
-    if (e.ref) byRef.set(String(e.ref).toUpperCase(), e);
+    const ref = e.ref ? String(e.ref).toUpperCase() : null;
+    addCandidate({ ...e, claimed: false, ref }, fingerprint(e.date, e.amount, e.type, e.merchant), ref);
   }
 
   const fresh = [];
@@ -71,9 +76,22 @@ export async function POST(req) {
   for (const t of valid) {
     const fp = fingerprint(t.date, t.amount, t.type, t.merchant);
     const ref = t.ref ? String(t.ref).toUpperCase() : null;
-    const match = byPrint.get(fp) || (ref ? byRef.get(ref) : null);
+
+    // A reference number is the bank's own proof two rows are the same
+    // transaction, or - just as important - proof they are not. Two payments
+    // that agree on day, amount and payee but carry different references are
+    // genuinely different events (a person paid twice in a day is common),
+    // so a fingerprint match only counts as a duplicate when neither side has
+    // a reference that contradicts it.
+    let match = ref ? byRef.get(ref) : null;
+    if (match?.claimed) match = null;
+    if (!match) {
+      const candidates = byPrint.get(fp) || [];
+      match = candidates.find(c => !c.claimed && (!c.ref || !ref || c.ref === ref));
+    }
 
     if (match) {
+      match.claimed = true;
       duplicates++;
       // Re-importing a period already held used to achieve nothing. When the
       // stored row predates a column the file can fill - the running balance,
@@ -87,9 +105,7 @@ export async function POST(req) {
       continue;
     }
 
-    const row = { ...t };
-    byPrint.set(fp, row);
-    if (ref) byRef.set(ref, row);
+    addCandidate({ claimed: false, ref, balance: t.balance }, fp, ref);
     fresh.push(t);
   }
   if (!fresh.length) return Response.json({ added: 0, duplicates, enriched });
